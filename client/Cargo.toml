@@ -1,0 +1,10 @@
+[package]
+name = "client"
+version = "0.1.0"
+authors = ["David LeGare <excaliburhissheath@gmail.com>"]
+
+[dependencies]
+core = { path = "../core" }
+gl-winit = { git = "https://github.com/randomPoison/polygon" }
+polygon = { git = "https://github.com/randomPoison/polygon" }
+winit = "0.7"
