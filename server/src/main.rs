@@ -5,7 +5,7 @@ extern crate tokio_io;
 extern crate tokio_proto;
 extern crate tokio_service;
 
-use core::LineCodec;
+use core::{LineCodec, LineProto};
 use std::io;
 use std::str;
 use std::time::*;
@@ -14,6 +14,7 @@ use tokio_core::net::TcpListener;
 use tokio_core::reactor::Core;
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::Framed;
+use tokio_proto::BindServer;
 use tokio_proto::pipeline::ServerProto;
 use tokio_service::Service;
 
@@ -27,44 +28,19 @@ fn main() {
     let listener = TcpListener::bind(&addr, &handle).unwrap();
 
     // Pull out a stream of sockets for incoming connections.
-    let server = listener.incoming().for_each(|(sock, _)| {
-        // Split up the reading and writing parts of the
-        // socket
-        let (reader, writer) = sock.split();
+    let server = listener.incoming().for_each(|(socket, _)| {
+        let binder = LineProto;
+        // Create the service
+        let service = Echo;
 
-        // A future that echos the data and returns how
-        // many bytes were copied...
-        let bytes_copied = tokio_io::io::copy(reader, writer);
-
-        // ... after which we'll print what happened
-        let handle_conn = bytes_copied.map(|(amt, _, _)| {
-            println!("wrote {} bytes", amt)
-        }).map_err(|err| {
-            println!("IO error: {:?}", err)
-        });
-
-        // Spawn the future as a concurrent task
-        handle.spawn(handle_conn);
+        // Bind it!
+        binder.bind_server(&handle, socket, service);
 
         Ok(())
     });
 
     // Spin up the server on the event loop
     core.run(server).unwrap();
-}
-
-#[derive(Debug)]
-pub struct LineProto;
-
-impl<T: AsyncRead + AsyncWrite + 'static> ServerProto<T> for LineProto {
-    type Request = String;
-    type Response = String;
-    type Transport = Framed<T, LineCodec>;
-    type BindTransport = Result<Self::Transport, io::Error>;
-
-    fn bind_transport(&self, io: T) -> Self::BindTransport {
-        Ok(io.framed(LineCodec))
-    }
 }
 
 #[derive(Debug)]

@@ -1,12 +1,16 @@
 extern crate bytes;
 extern crate polygon_math as math;
 extern crate tokio_io;
+extern crate tokio_proto;
 
 use bytes::BytesMut;
 use math::*;
 use std::io;
 use std::str;
 use tokio_io::codec::{Encoder, Decoder};
+use tokio_io::{AsyncRead, AsyncWrite};
+use tokio_io::codec::Framed;
+use tokio_proto::pipeline::{ClientProto, ServerProto};
 
 #[derive(Debug, Clone)]
 pub struct Player {
@@ -49,5 +53,30 @@ impl Encoder for LineCodec {
         buf.extend(msg.as_bytes());
         buf.extend(b"\n");
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct LineProto;
+
+impl<T: AsyncRead + AsyncWrite + 'static> ClientProto<T> for LineProto {
+    type Request = String;
+    type Response = String;
+    type Transport = Framed<T, LineCodec>;
+    type BindTransport = Result<Self::Transport, io::Error>;
+
+    fn bind_transport(&self, io: T) -> Self::BindTransport {
+        Ok(io.framed(LineCodec))
+    }
+}
+
+impl<T: AsyncRead + AsyncWrite + 'static> ServerProto<T> for LineProto {
+    type Request = String;
+    type Response = String;
+    type Transport = Framed<T, LineCodec>;
+    type BindTransport = Result<Self::Transport, io::Error>;
+
+    fn bind_transport(&self, io: T) -> Self::BindTransport {
+        Ok(io.framed(LineCodec))
     }
 }

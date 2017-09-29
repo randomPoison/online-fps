@@ -8,7 +8,7 @@ extern crate tokio_io;
 extern crate tokio_proto;
 extern crate tokio_service;
 
-use core::LineCodec;
+use core::{LineCodec, LineProto};
 use gl_winit::CreateContext;
 use std::io;
 use std::str;
@@ -79,19 +79,5 @@ fn main() {
         // TODO: Wait more efficiently by sleeping the thread.
         while Instant::now() < next_loop_time {}
         next_loop_time += frame_time;
-    }
-}
-
-#[derive(Debug)]
-pub struct LineProto;
-
-impl<T: AsyncRead + AsyncWrite + 'static> ClientProto<T> for LineProto {
-    type Request = String;
-    type Response = String;
-    type Transport = Framed<T, LineCodec>;
-    type BindTransport = Result<Self::Transport, io::Error>;
-
-    fn bind_transport(&self, io: T) -> Self::BindTransport {
-        Ok(io.framed(LineCodec))
     }
 }
