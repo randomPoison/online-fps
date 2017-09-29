@@ -13,10 +13,10 @@ use gl_winit::CreateContext;
 use std::io;
 use std::str;
 use std::time::*;
-use futures::Future;
+use futures::{Future, Stream};
 use polygon::*;
 use polygon::gl::GlRender;
-use tokio_core::reactor::Core;
+use tokio_core::reactor::{Core, Interval};
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::Framed;
 use tokio_proto::pipeline::ClientProto;
@@ -47,37 +47,38 @@ fn main() {
                     println!("Response from server: {:?}", response);
                     Ok(())
                 })
+        })
+        .map_err(|err| {
+            println!("Error in connection: {:?}", err);
         });
-    core.run(connect).unwrap();
+    handle.spawn(connect);
 
     // Create the OpenGL context and the renderer.
     let context = window.create_context().expect("Failed to create GL context");
     let mut renderer = GlRender::new(context).expect("Failed to create GL renderer");
 
     // Run the main loop of the game, rendering once per frame.
+    // TODO: Find a way to exit the main loop.
     let mut loop_active = true;
     let frame_time = Duration::from_secs(1) / 60;
-    let mut next_loop_time = Instant::now() + frame_time;
-    while loop_active {
-        events_loop.poll_events(|event| {
-            match event {
-                Event::WindowEvent { event: WindowEvent::Closed, .. } => {
-                    loop_active = false;
+    let interval = Interval::new(frame_time, &handle)
+        .expect("Failed to create interval stream???")
+        .for_each(|_| {
+            events_loop.poll_events(|event| {
+                match event {
+                    Event::WindowEvent { event: WindowEvent::Closed, .. } => {
+                        loop_active = false;
+                    }
+
+                    _ => {}
                 }
+            });
 
-                _ => {}
-            }
+            // TODO: Do each frame's logic for the stuffs.
+
+            // Render the mesh.
+            renderer.draw();
+            Ok(())
         });
-        if !loop_active { break; }
-
-        // TODO: Do each frame's logic for the stuffs.
-
-        // Render the mesh.
-        renderer.draw();
-
-        // Wait for the next frame.
-        // TODO: Wait more efficiently by sleeping the thread.
-        while Instant::now() < next_loop_time {}
-        next_loop_time += frame_time;
-    }
+    core.run(interval).unwrap();
 }

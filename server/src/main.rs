@@ -44,7 +44,7 @@ fn main() {
     let interval = Interval::new(frame_time, &handle)
         .expect("Failed to create interval stream???")
         .for_each(|_| {
-            println!("It's frame time!");
+            // TODO: Run update logic each frame.
             Ok(())
         });
 
