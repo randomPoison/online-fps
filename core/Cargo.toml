@@ -4,3 +4,6 @@ version = "0.1.0"
 authors = ["David LeGare <excaliburhissheath@gmail.com>"]
 
 [dependencies]
+bytes = "0.4"
+polygon-math = { git = "https://github.com/randomPoison/polygon" }
+tokio-io = "0.1"
