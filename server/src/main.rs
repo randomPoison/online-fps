@@ -11,7 +11,7 @@ use std::str;
 use std::time::*;
 use futures::{future, Future, Stream};
 use tokio_core::net::TcpListener;
-use tokio_core::reactor::Core;
+use tokio_core::reactor::{Core, Interval};
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::Framed;
 use tokio_proto::BindServer;
@@ -28,19 +28,28 @@ fn main() {
     let listener = TcpListener::bind(&addr, &handle).unwrap();
 
     // Pull out a stream of sockets for incoming connections.
-    let server = listener.incoming().for_each(|(socket, _)| {
-        let binder = LineProto;
-        // Create the service
-        let service = Echo;
+    let server = listener.incoming()
+        .for_each(move |(socket, _)| {
+            LineProto.bind_server(&handle, socket, Echo);
+            Ok(())
+        })
+        .map_err(|err| {
+            println!("Err in server: {:?}", err);
+            ()
+        });
+    let handle = core.handle();
+    handle.spawn(server);
 
-        // Bind it!
-        binder.bind_server(&handle, socket, service);
-
-        Ok(())
-    });
+    let frame_time = Duration::from_secs(1) / 60;
+    let interval = Interval::new(frame_time, &handle)
+        .expect("Failed to create interval stream???")
+        .for_each(|_| {
+            println!("It's frame time!");
+            Ok(())
+        });
 
     // Spin up the server on the event loop
-    core.run(server).unwrap();
+    core.run(interval).unwrap();
 }
 
 #[derive(Debug)]
