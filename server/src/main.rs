@@ -5,17 +5,14 @@ extern crate tokio_io;
 extern crate tokio_proto;
 extern crate tokio_service;
 
-use core::{LineCodec, LineProto};
+use core::LineProto;
 use std::io;
 use std::str;
 use std::time::*;
 use futures::{future, Future, Stream};
 use tokio_core::net::TcpListener;
 use tokio_core::reactor::{Core, Interval};
-use tokio_io::{AsyncRead, AsyncWrite};
-use tokio_io::codec::Framed;
 use tokio_proto::BindServer;
-use tokio_proto::pipeline::ServerProto;
 use tokio_service::Service;
 
 fn main() {
@@ -30,7 +27,7 @@ fn main() {
     // Pull out a stream of sockets for incoming connections.
     let server = listener.incoming()
         .for_each(move |(socket, _)| {
-            LineProto.bind_server(&handle, socket, Echo);
+            LineProto.bind_server(&handle, socket, Server);
             Ok(())
         })
         .map_err(|err| {
@@ -53,15 +50,16 @@ fn main() {
 }
 
 #[derive(Debug)]
-pub struct Echo;
+pub struct Server;
 
-impl Service for Echo {
+impl Service for Server {
     type Request = String;
     type Response = String;
     type Error = io::Error;
     type Future = Box<Future<Item = Self::Response, Error =  Self::Error>>;
 
     fn call(&self, req: Self::Request) -> Self::Future {
+        // TODO: Actually look at the request and send a real response.
         Box::new(future::ok(req))
     }
 }

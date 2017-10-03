@@ -2,13 +2,14 @@ extern crate core;
 extern crate futures;
 extern crate gl_winit;
 extern crate polygon;
-extern crate winit;
+extern crate serde_json;
 extern crate tokio_core;
 extern crate tokio_io;
 extern crate tokio_proto;
 extern crate tokio_service;
+extern crate winit;
 
-use core::{LineCodec, LineProto};
+use core::{LineProto, Player};
 use gl_winit::CreateContext;
 use std::io;
 use std::str;
@@ -17,9 +18,6 @@ use futures::{Future, Stream};
 use polygon::*;
 use polygon::gl::GlRender;
 use tokio_core::reactor::{Core, Interval};
-use tokio_io::{AsyncRead, AsyncWrite};
-use tokio_io::codec::Framed;
-use tokio_proto::pipeline::ClientProto;
 use tokio_proto::TcpClient;
 use tokio_service::Service;
 use winit::*;
@@ -36,49 +34,46 @@ fn main() {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
 
-    // Connect the client.
-    let addr = "127.0.0.1:12345".parse().unwrap();
-    let client = TcpClient::new(LineProto);
-    let connect = client.connect(&addr, &handle)
-        .then(|connection| {
-            let connection = connection.unwrap();
-            connection.call("Foobar".into())
-                .and_then(|response| {
-                    println!("Response from server: {:?}", response);
-                    Ok(())
-                })
-        })
-        .map_err(|err| {
-            println!("Error in connection: {:?}", err);
-        });
-    handle.spawn(connect);
-
     // Create the OpenGL context and the renderer.
     let context = window.create_context().expect("Failed to create GL context");
     let mut renderer = GlRender::new(context).expect("Failed to create GL renderer");
 
-    // Run the main loop of the game, rendering once per frame.
-    // TODO: Find a way to exit the main loop.
-    let mut loop_active = true;
-    let frame_time = Duration::from_secs(1) / 60;
-    let interval = Interval::new(frame_time, &handle)
-        .expect("Failed to create interval stream???")
-        .for_each(|_| {
-            events_loop.poll_events(|event| {
-                match event {
-                    Event::WindowEvent { event: WindowEvent::Closed, .. } => {
-                        loop_active = false;
-                    }
+    // Perform the setup process:
+    //
+    // 1. Establish a connection to the server.
+    // 2. Request the player's current state.
+    // 2. Start the main loop.
+    let addr = "127.0.0.1:12345".parse().unwrap();
+    let client = TcpClient::new(LineProto);
+    let setup_and_main_loop = client.connect(&addr, &handle)
+        .and_then(|connection| connection.call("GetPlayer".into()))
+        .and_then(|player_string| serde_json::from_str::<Player>(player_string.as_ref()).map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to parse JSON")))
+        .and_then(move |player| {
+            // Run the main loop of the game, rendering once per frame.
+            // TODO: Find a way to exit the main loop.
+            let mut loop_active = true;
+            let frame_time = Duration::from_secs(1) / 60;
+            Interval::new(frame_time, &handle)
+                .expect("Failed to create interval stream???")
+                .for_each(move |_| {
+                    events_loop.poll_events(|event| {
+                        match event {
+                            Event::WindowEvent { event: WindowEvent::Closed, .. } => {
+                                loop_active = false;
+                            }
 
-                    _ => {}
-                }
-            });
+                            _ => {}
+                        }
+                    });
 
-            // TODO: Do each frame's logic for the stuffs.
+                    // TODO: Do each frame's logic for the stuffs.
+                    println!("Player: {:?}", player);
 
-            // Render the mesh.
-            renderer.draw();
-            Ok(())
+                    // Render the mesh.
+                    renderer.draw();
+                    Ok(())
+                })
         });
-    core.run(interval).unwrap();
+
+    core.run(setup_and_main_loop).unwrap();
 }

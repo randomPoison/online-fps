@@ -1,5 +1,8 @@
 extern crate bytes;
 extern crate polygon_math as math;
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
 extern crate tokio_io;
 extern crate tokio_proto;
 
@@ -12,7 +15,7 @@ use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::Framed;
 use tokio_proto::pipeline::{ClientProto, ServerProto};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub position: Point,
     pub orientation: Orientation,
