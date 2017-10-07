@@ -67,10 +67,10 @@ fn main() {
                     });
 
                     // TODO: Do each frame's logic for the stuffs.
-                    println!("Player: {:?}", player);
 
                     // Render the mesh.
                     renderer.draw();
+
                     Ok(())
                 })
         });
