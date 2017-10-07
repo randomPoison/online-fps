@@ -14,7 +14,7 @@ use gl_winit::CreateContext;
 use std::io;
 use std::str;
 use std::time::*;
-use futures::{Future, Stream};
+use futures::{future, Future, Stream};
 use polygon::*;
 use polygon::gl::GlRender;
 use tokio_core::reactor::{Core, Interval};
@@ -51,28 +51,33 @@ fn main() {
         .and_then(move |player| {
             // Run the main loop of the game, rendering once per frame.
             // TODO: Find a way to exit the main loop.
-            let mut loop_active = true;
             let frame_time = Duration::from_secs(1) / 60;
             Interval::new(frame_time, &handle)
                 .expect("Failed to create interval stream???")
-                .for_each(move |_| {
+                .take_while(move |_| {
+                    let mut window_closed = false;
                     events_loop.poll_events(|event| {
                         match event {
                             Event::WindowEvent { event: WindowEvent::Closed, .. } => {
-                                loop_active = false;
+                                window_closed = true;
                             }
 
                             _ => {}
                         }
                     });
 
+                    if window_closed {
+                        return future::ok(false);
+                    }
+
                     // TODO: Do each frame's logic for the stuffs.
 
                     // Render the mesh.
                     renderer.draw();
 
-                    Ok(())
+                    future::ok(true)
                 })
+                .for_each(|_| Ok(()))
         });
 
     core.run(setup_and_main_loop).unwrap();
