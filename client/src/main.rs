@@ -5,11 +5,9 @@ extern crate polygon;
 extern crate serde_json;
 extern crate tokio_core;
 extern crate tokio_io;
-extern crate tokio_proto;
-extern crate tokio_service;
 extern crate winit;
 
-use core::{LineProto, Player};
+use core::{LineCodec, Player, ReadyIter};
 use gl_winit::CreateContext;
 use std::io;
 use std::str;
@@ -17,9 +15,9 @@ use std::time::*;
 use futures::{future, Future, Stream};
 use polygon::*;
 use polygon::gl::GlRender;
+use tokio_core::net::TcpStream;
 use tokio_core::reactor::{Core, Interval};
-use tokio_proto::TcpClient;
-use tokio_service::Service;
+use tokio_io::AsyncRead;
 use winit::*;
 
 fn main() {
@@ -38,23 +36,23 @@ fn main() {
     let context = window.create_context().expect("Failed to create GL context");
     let mut renderer = GlRender::new(context).expect("Failed to create GL renderer");
 
+//    let mut player = None;
+
     // Perform the setup process:
     //
     // 1. Establish a connection to the server.
     // 2. Request the player's current state.
     // 2. Start the main loop.
     let addr = "127.0.0.1:12345".parse().unwrap();
-    let client = TcpClient::new(LineProto);
-    let setup_and_main_loop = client.connect(&addr, &handle)
-        .and_then(|connection| connection.call("GetPlayer".into()))
-        .and_then(|player_string| serde_json::from_str::<Player>(player_string.as_ref()).map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to parse JSON")))
-        .and_then(move |player| {
+    let setup_and_main_loop = TcpStream::connect(&addr, &handle)
+        .map(|stream| stream.framed(LineCodec))
+        .and_then(move |mut stream| {
             // Run the main loop of the game, rendering once per frame.
-            // TODO: Find a way to exit the main loop.
             let frame_time = Duration::from_secs(1) / 60;
             Interval::new(frame_time, &handle)
                 .expect("Failed to create interval stream???")
                 .take_while(move |_| {
+                    // Eat any window events to determine if the window has closed.
                     let mut window_closed = false;
                     events_loop.poll_events(|event| {
                         match event {
@@ -70,7 +68,11 @@ fn main() {
                         return future::ok(false);
                     }
 
-                    // TODO: Do each frame's logic for the stuffs.
+                    // Process incoming messages from the server.
+                    for message in ReadyIter(&mut stream) {
+                        let message = message.expect("Failed to read message from server");
+                        println!("Got a message from the server: {:?}", message);
+                    }
 
                     // Render the mesh.
                     renderer.draw();
@@ -80,5 +82,6 @@ fn main() {
                 .for_each(|_| Ok(()))
         });
 
+    // Run the whole game as one big task.
     core.run(setup_and_main_loop).unwrap();
 }

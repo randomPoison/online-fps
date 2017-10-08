@@ -11,5 +11,3 @@ polygon-math = { git = "https://github.com/randomPoison/polygon", features = ["s
 serde_json = "1.0"
 tokio-io = "0.1"
 tokio-core = "0.1"
-tokio-proto = "0.1"
-tokio-service = "0.1"
