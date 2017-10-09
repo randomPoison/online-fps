@@ -72,3 +72,13 @@ impl<'a, T: 'a> Iterator for ReadyIter<'a, T>  where T: Stream
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ServerMessage {
+    PlayerUpdate(Player),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ClientMessage {
+    PlayerUpdate(Player),
+}

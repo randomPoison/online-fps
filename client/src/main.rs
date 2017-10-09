@@ -45,43 +45,51 @@ fn main() {
     // 2. Start the main loop.
     let addr = "127.0.0.1:12345".parse().unwrap();
     let setup_and_main_loop = TcpStream::connect(&addr, &handle)
-        .map(|stream| stream.framed(LineCodec))
-        .and_then(move |mut stream| {
-            // Run the main loop of the game, rendering once per frame.
-            let frame_time = Duration::from_secs(1) / 60;
-            Interval::new(frame_time, &handle)
-                .expect("Failed to create interval stream???")
-                .take_while(move |_| {
-                    // Eat any window events to determine if the window has closed.
-                    let mut window_closed = false;
-                    events_loop.poll_events(|event| {
-                        match event {
-                            Event::WindowEvent { event: WindowEvent::Closed, .. } => {
-                                window_closed = true;
-                            }
+        .map(|stream| stream.framed(LineCodec));
 
-                            _ => {}
-                        }
-                    });
+    // Wait to connect to the server before starting the main loop.
+    let mut stream = core.run(setup_and_main_loop).unwrap();
+    println!("Got the stream: {:?}", stream);
 
-                    if window_closed {
-                        return future::ok(false);
+    // Run the main loop of the game, rendering once per frame.
+    let frame_time = Duration::from_secs(1) / 60;
+    let mut next_frame_time = Instant::now() + frame_time;
+    loop {
+        let frame_task = future::lazy(|| {
+            // Eat any window events to determine if the window has closed.
+            let mut window_open = true;
+            events_loop.poll_events(|event| {
+                match event {
+                    Event::WindowEvent { event: WindowEvent::Closed, .. } => {
+                        window_open = false;
                     }
 
-                    // Process incoming messages from the server.
-                    for message in ReadyIter(&mut stream) {
-                        let message = message.expect("Failed to read message from server");
-                        println!("Got a message from the server: {:?}", message);
-                    }
+                    _ => {}
+                }
+            });
 
-                    // Render the mesh.
-                    renderer.draw();
+            // Don't run the rest of the frame if the window has closed.
+            if !window_open { return future::ok(false); }
 
-                    future::ok(true)
-                })
-                .for_each(|_| Ok(()))
+            // Process incoming messages from the server.
+            for message in ReadyIter(&mut stream) {
+                let message = message.expect("Failed to read message from server");
+                println!("Got a message from the server: {:?}", message);
+            }
+
+            // Render the mesh.
+            renderer.draw();
+            println!("Drew a frame, cool!");
+
+            future::ok::<_, ()>(true)
         });
 
-    // Run the whole game as one big task.
-    core.run(setup_and_main_loop).unwrap();
+        core.run(frame_task).expect("Error running a frame");
+        println!("Done with a frame");
+
+        // Wait for the next frame.
+        // TODO: Do this in a less horribly ineffiecient method.
+        while Instant::now() < next_frame_time {}
+        next_frame_time += frame_time;
+    }
 }
