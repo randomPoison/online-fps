@@ -16,7 +16,7 @@ use futures::{future, Future, Stream};
 use polygon::*;
 use polygon::gl::GlRender;
 use tokio_core::net::TcpStream;
-use tokio_core::reactor::{Core, Interval};
+use tokio_core::reactor::Core;
 use tokio_io::AsyncRead;
 use winit::*;
 
@@ -43,13 +43,12 @@ fn main() {
     // 1. Establish a connection to the server.
     // 2. Request the player's current state.
     // 2. Start the main loop.
-    let addr = "127.0.0.1:12345".parse().unwrap();
-    let setup_and_main_loop = TcpStream::connect(&addr, &handle)
+    let addr = "127.0.0.1:1234".parse().unwrap();
+    let connect_to_server = TcpStream::connect(&addr, &handle)
         .map(|stream| stream.framed(LineCodec));
 
     // Wait to connect to the server before starting the main loop.
-    let mut stream = core.run(setup_and_main_loop).unwrap();
-    println!("Got the stream: {:?}", stream);
+    let mut stream = core.run(connect_to_server).unwrap();
 
     // Run the main loop of the game, rendering once per frame.
     let frame_time = Duration::from_secs(1) / 60;
@@ -79,13 +78,11 @@ fn main() {
 
             // Render the mesh.
             renderer.draw();
-            println!("Drew a frame, cool!");
 
             future::ok::<_, ()>(true)
         });
 
-        core.run(frame_task).expect("Error running a frame");
-        println!("Done with a frame");
+        if !core.run(frame_task).expect("Error running a frame") { break; }
 
         // Wait for the next frame.
         // TODO: Do this in a less horribly ineffiecient method.

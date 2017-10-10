@@ -1,5 +1,6 @@
 extern crate core;
 extern crate futures;
+extern crate futures_cpupool;
 extern crate polygon_math as math;
 extern crate serde_json;
 extern crate tokio_core;
@@ -9,37 +10,33 @@ use core::{ClientMessage, LineCodec, Player, ReadyIter, ServerMessage};
 use std::io;
 use std::str;
 use std::time::*;
-use futures::{future, Stream, Sink};
+use futures::{future, Future, Stream, Sink};
+use futures_cpupool::CpuPool;
 use math::*;
 use tokio_core::net::TcpListener;
-use tokio_core::reactor::Core;
+use tokio_core::reactor::{Core, Interval};
 use tokio_io::AsyncRead;
 
 fn main() {
     // Create the event loop that will drive this server.
     let mut core = Core::new().unwrap();
     let handle = core.handle();
+//    let reactor = CpuPool::new_num_cpus();
 
-    let mut clients = Vec::new();
+    let mut clients = Vec::<Client>::new();
 
     // Bind the server's socket.
-    let addr = "127.0.0.1:12345".parse().unwrap();
-    let listener = TcpListener::bind(&addr, &handle).unwrap();
-
-    // Pull out a stream of sockets for incoming connections.
-    let mut incoming = listener.incoming();
+    let addr = "127.0.0.1:1234".parse().unwrap();
+    let mut incoming = TcpListener::bind(&addr, &handle).expect("Failed to bind socket");
 
     // Run the main loop of the game.
     let frame_time = Duration::from_secs(1) / 60;
     let delta = 1.0 / 60.0;
-    let mut next_frame_time = Instant::now() + frame_time;
-    loop {
-        // Build a big old task representing all the work to be done for a single frame.
-        let frame_task = future::lazy(|| {
-            // Accept any incoming client connections.
-            for incoming in ReadyIter(&mut incoming) {
-                let (stream, stream_address) = incoming.expect("Error connecting to client");
-                println!("Got me a new client, {:?}", stream_address);
+    let main_loop = Interval::new(frame_time, &handle)
+        .expect("Failed to create main loop")
+        .for_each(|_| {
+            while let Ok((stream, address)) = incoming.accept() {
+                println!("Got me a new client, {:?}", address);
 
                 // Convert the codec into a pair stream/sink pair using our codec to
                 // delineate messages.
@@ -81,21 +78,11 @@ fn main() {
                     .expect("Couldn't begin send of message");
             }
 
-            // Wait for all the client streams to finish flushing pending messages.
-            let pending_sends = clients.iter_mut()
-                .map(|client| &mut client.sink)
-                .map(|sink| future::poll_fn(move || sink.poll_complete()));
-            future::join_all(pending_sends)
+            // TODO: Flush outgoing messages for the clients.
+
+            Ok(())
         });
-
-        // Run the frame's task to completion.
-        core.run(frame_task).expect("Error while running a frame");
-
-        // Wait for the next frame.
-        // TODO: Do this in a less horribly ineffiecient method.
-        while Instant::now() < next_frame_time {}
-        next_frame_time += frame_time;
-    }
+    core.run(main_loop).expect("Error running the main loop");
 }
 
 struct Client {
