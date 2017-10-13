@@ -6,15 +6,18 @@ extern crate serde_json;
 extern crate tokio_core;
 extern crate tokio_io;
 
-use core::{ClientMessage, LineCodec, Player, ReadyIter, ServerMessage};
-use std::io;
-use std::str;
-use std::thread;
-use std::time::*;
-use futures::{future, Future, Stream, Sink};
+use core::{ClientMessage, DummyNotify, LineCodec, Player, PollReady, ServerMessage};
+use futures::{Future, Stream, Sink};
+use futures::executor::{self, Notify};
+use futures::future;
 use futures::sync::mpsc;
 use futures_cpupool::CpuPool;
 use math::*;
+use std::io;
+use std::sync::Arc;
+use std::str;
+use std::thread;
+use std::time::*;
 use tokio_core::net::TcpListener;
 use tokio_core::reactor::Core;
 use tokio_io::AsyncRead;
@@ -44,32 +47,41 @@ fn main() {
 
                 // Convert the codec into a pair stream/sink pair using our codec to
                 // delineate messages.
-                let (sink, stream) = socket.framed(LineCodec).split();
-
-                // Automatically perform JSON conversion for incoming/outgoing messages.
-                let stream = stream.map(|message_string| {
-                    serde_json::from_str(&*message_string).expect("Failed to deserialize JSON")
-                });
-                let mut sink = sink.with(|message: ServerMessage| {
-                    serde_json::to_string(&message)
-                        .map_err(|_| io::Error::new(io::ErrorKind::Other, "Shit's fucked"))
-                });
+                let (mut sink, stream) = socket.framed(LineCodec).split();
 
                 // Setup tasks for pumping incoming and outgoing messages.
-                let incoming_task = stream.for_each(move |message: ClientMessage| {
-                    incoming_sender.unbounded_send(message)
-                        .expect("Failed to send incoming message to main game");
-                    Ok(())
-                }).map_err(|error| {
-                    panic!("Error with incoming message: {:?}", error);
-                });
+                let incoming_task = stream
+                    .map(|message_string| {
+                        serde_json::from_str(&*message_string)
+                            .expect("Failed to deserialize JSON from client")
+                    })
+                    .for_each(move |message: ClientMessage| {
+                        incoming_sender.unbounded_send(message)
+                            .expect("Failed to send incoming message to game thread");
+                        Ok(())
+                    })
+                    .map_err(|error| {
+                        match error.kind() {
+                            io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted => {}
 
-                let outgoing_task = outgoing_receiver.for_each(move |message: ServerMessage| {
-                    sink.start_send(message).expect("Failed to start send on outgoing message");
-                    Ok(())
-                }).map_err(|error| {
-                    panic!("Error with incoming message: {:?}", error);
-                });
+                            default => {
+                                panic!("Error with incoming message: {:?}", error.kind());
+                            }
+                        }
+                    });
+
+                let outgoing_task = outgoing_receiver
+                    .map(|message: ServerMessage| {
+                        serde_json::to_string(&message)
+                            .expect("Failed to serialize message to JSON")
+                    })
+                    .for_each(move |message| {
+                        sink.start_send(message).expect("Failed to start send on outgoing message");
+                        Ok(())
+                    })
+                    .map_err(|error| {
+                        println!("Error with outgoing message: {:?}", error);
+                    });
 
                 // Spawn the tasks onto the reactor.
                 handle.spawn(incoming_task);
@@ -85,13 +97,18 @@ fn main() {
         core.run(incoming).expect("Error handling incoming connections");
     });
 
+    let notify = DummyNotify::new();
+    let mut client_receiver = executor::spawn(client_receiver);
+
     // Run the main loop of the game.
-    for client in client_receiver.wait() {
-        let (sender, receiver) = client.expect("Error getting client on main thread");
-        println!("Main game got some client channels!");
-        sender.unbounded_send(ServerMessage::PlayerUpdate(Player {
-            position: Point::origin(),
-            orientation: Orientation::new(),
-        })).expect("Failed to send message to client");
+    loop {
+        for client_result in PollReady::new(&mut client_receiver, &notify) {
+            let (sender, receiver) = client_result.expect("Error receiving client on main thread");
+            println!("Main game got some client channels!");
+            sender.unbounded_send(ServerMessage::PlayerUpdate(Player {
+                position: Point::origin(),
+                orientation: Orientation::new(),
+            })).expect("Failed to send message to client");
+        }
     }
 }

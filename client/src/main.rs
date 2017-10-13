@@ -7,7 +7,7 @@ extern crate tokio_core;
 extern crate tokio_io;
 extern crate winit;
 
-use core::{LineCodec, Player, ReadyIter};
+use core::{LineCodec, Player, PollReady};
 use gl_winit::CreateContext;
 use std::io;
 use std::str;
@@ -70,11 +70,11 @@ fn main() {
             // Don't run the rest of the frame if the window has closed.
             if !window_open { return future::ok(false); }
 
-            // Process incoming messages from the server.
-            for message in ReadyIter(&mut stream) {
-                let message = message.expect("Failed to read message from server");
-                println!("Got a message from the server: {:?}", message);
-            }
+//            // Process incoming messages from the server.
+//            for message in PollReady(&mut stream) {
+//                let message = message.expect("Failed to read message from server");
+//                println!("Got a message from the server: {:?}", message);
+//            }
 
             // Render the mesh.
             renderer.draw();

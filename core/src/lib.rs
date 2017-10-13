@@ -8,9 +8,11 @@ extern crate tokio_io;
 
 use bytes::BytesMut;
 use futures::{Async, Stream};
+use futures::executor::{Notify, Spawn};
 use math::*;
 use std::io;
 use std::str;
+use std::sync::Arc;
 use tokio_io::codec::{Encoder, Decoder};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,20 +59,45 @@ impl Encoder for LineCodec {
     }
 }
 
-pub struct ReadyIter<'a, T: 'a>(pub &'a mut T);
+pub struct PollReady<'a, S: 'a> {
+    stream: &'a mut Spawn<S>,
+    notify_handle: Arc<DummyNotify>,
+}
 
-impl<'a, T: 'a> Iterator for ReadyIter<'a, T>  where T: Stream
+impl<'a, S: 'a + Stream> PollReady<'a, S> {
+    pub fn new(stream: &'a mut Spawn<S>, notify_handle: &Arc<DummyNotify>) -> PollReady<'a, S> {
+        PollReady {
+            stream,
+            notify_handle: notify_handle.clone(),
+        }
+    }
+}
+
+impl<'a, S: 'a> Iterator for PollReady<'a, S>  where S: Stream
 {
-    type Item = Result<T::Item, T::Error>;
+    type Item = Result<S::Item, S::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.0.poll() {
+        match self.stream.poll_stream_notify(&self.notify_handle, 0) {
             Ok(Async::Ready(Some(item))) => Some(Ok(item)),
             Ok(Async::Ready(None)) => None,
             Ok(Async::NotReady) => None,
             Err(error) => Some(Err(error)),
         }
     }
+}
+
+/// Helper with empty implementation of the `Notify` trait.
+pub struct DummyNotify;
+
+impl DummyNotify {
+    pub fn new() -> Arc<DummyNotify> {
+        Arc::new(DummyNotify)
+    }
+}
+
+impl Notify for DummyNotify {
+    fn notify(&self, id: usize) {}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
