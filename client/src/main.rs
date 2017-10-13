@@ -7,12 +7,16 @@ extern crate tokio_core;
 extern crate tokio_io;
 extern crate winit;
 
-use core::{LineCodec, Player, PollReady};
+use core::{ClientMessage, DummyNotify, LineCodec, Player, PollReady, ServerMessage};
 use gl_winit::CreateContext;
 use std::io;
 use std::str;
-use std::time::*;
-use futures::{future, Future, Stream};
+use std::thread;
+use std::time::{Duration, Instant};
+use futures::{Async, Future, Sink, Stream};
+use futures::executor;
+use futures::sync::mpsc;
+use futures::sync::oneshot;
 use polygon::*;
 use polygon::gl::GlRender;
 use tokio_core::net::TcpStream;
@@ -28,61 +32,124 @@ fn main() {
         .build(&events_loop)
         .expect("Failed to open window");
 
-    // Create the event loop that will drive the client.
-    let mut core = Core::new().unwrap();
-    let handle = core.handle();
-
     // Create the OpenGL context and the renderer.
     let context = window.create_context().expect("Failed to create GL context");
     let mut renderer = GlRender::new(context).expect("Failed to create GL renderer");
 
-//    let mut player = None;
+    // Spawn a thread dedicated to handling all I/O with clients.
+    let (connection_sender, connection_receiver) = oneshot::channel();
+    thread::spawn(move || {
+        // Create the event loop that will drive the client.
+        let mut core = Core::new().unwrap();
+        let handle = core.handle();
 
-    // Perform the setup process:
-    //
-    // 1. Establish a connection to the server.
-    // 2. Request the player's current state.
-    // 2. Start the main loop.
-    let addr = "127.0.0.1:1234".parse().unwrap();
-    let connect_to_server = TcpStream::connect(&addr, &handle)
-        .map(|stream| stream.framed(LineCodec));
+        // Establish a connection with the game server.
+        let addr = "127.0.0.1:1234".parse().unwrap();
+        let connect_to_server = TcpStream::connect(&addr, &handle);
+        let stream = core.run(connect_to_server).expect("Failed to connect to server");
 
-    // Wait to connect to the server before starting the main loop.
-    let mut stream = core.run(connect_to_server).unwrap();
+        // Create channels for passing incoming and outgoing messages to and from the main
+        // game.
+        let (incoming_sender, incoming_receiver) = mpsc::unbounded();
+        let (outgoing_sender, outgoing_receiver) = mpsc::unbounded();
+
+        // Convert the codec into a pair stream/sink pair using our codec to
+        // delineate messages.
+        let (mut sink, stream) = stream.framed(LineCodec).split();
+
+        // Setup task for pumping incoming messages to the game thread.
+        let incoming_task = stream
+            .map(|message_string| {
+                serde_json::from_str(&*message_string)
+                    .expect("Failed to deserialize JSON from client")
+            })
+            .for_each(move |message: ServerMessage| {
+                println!("I/O thread received incoming message: {:?}", message);
+                incoming_sender.unbounded_send(message)
+                    .expect("Failed to send incoming message to game thread");
+                Ok(())
+            })
+            .map_err(|error| {
+                match error.kind() {
+                    io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted => {}
+
+                    kind @ _ => {
+                        panic!("Error with incoming message: {:?}", kind);
+                    }
+                }
+            });
+
+        // Setup task for pumping outgoing messages from the game thread to the server.
+        let outgoing_task = outgoing_receiver
+            .map(|message: ClientMessage| {
+                serde_json::to_string(&message)
+                    .expect("Failed to serialize message to JSON")
+            })
+            .for_each(move |message| {
+                sink.start_send(message).expect("Failed to start send on outgoing message");
+                Ok(())
+            })
+            .map_err(|error| {
+                println!("Error with outgoing message: {:?}", error);
+            });
+
+        connection_sender.send((outgoing_sender, incoming_receiver))
+            .expect("Failed to send channels to game thread");
+
+        handle.spawn(outgoing_task);
+        core.run(incoming_task).expect("Error with incoming messages");
+    });
+
+    let notify = DummyNotify::new();
+    let mut connection_receiver = executor::spawn(connection_receiver);
+
+    // Game state variables.
+    let mut connection = None;
 
     // Run the main loop of the game, rendering once per frame.
     let frame_time = Duration::from_secs(1) / 60;
     let mut next_frame_time = Instant::now() + frame_time;
     loop {
-        let frame_task = future::lazy(|| {
-            // Eat any window events to determine if the window has closed.
-            let mut window_open = true;
-            events_loop.poll_events(|event| {
-                match event {
-                    Event::WindowEvent { event: WindowEvent::Closed, .. } => {
-                        window_open = false;
-                    }
-
-                    _ => {}
+        // Eat any window events to determine if the window has closed.
+        let mut window_open = true;
+        events_loop.poll_events(|event| {
+            match event {
+                Event::WindowEvent { event: WindowEvent::Closed, .. } => {
+                    window_open = false;
                 }
-            });
 
-            // Don't run the rest of the frame if the window has closed.
-            if !window_open { return future::ok(false); }
-
-//            // Process incoming messages from the server.
-//            for message in PollReady(&mut stream) {
-//                let message = message.expect("Failed to read message from server");
-//                println!("Got a message from the server: {:?}", message);
-//            }
-
-            // Render the mesh.
-            renderer.draw();
-
-            future::ok::<_, ()>(true)
+                _ => {}
+            }
         });
 
-        if !core.run(frame_task).expect("Error running a frame") { break; }
+        // Don't run the rest of the frame if the window has closed.
+        if !window_open { break; }
+
+        match connection.take() {
+            Some((sender, mut receiver)) => {
+                for message_result in PollReady::new(&mut receiver, &notify) {
+                    let message = message_result.unwrap();
+                    println!("Got a message: {:?}", message);
+                }
+
+                connection = Some((sender, receiver));
+            }
+
+            None => {
+                let async = connection_receiver
+                    .poll_future_notify(&notify, 0)
+                    .expect("I/O thread cancelled sending connection");
+                if let Async::Ready((sender, receiver)) = async {
+                    let sender = executor::spawn(sender);
+                    let receiver = executor::spawn(receiver);
+                    connection = Some((sender, receiver));
+                }
+            }
+        }
+
+        // Render the mesh.
+        renderer.draw();
+
 
         // Wait for the next frame.
         // TODO: Do this in a less horribly ineffiecient method.

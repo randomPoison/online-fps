@@ -8,16 +8,12 @@ extern crate tokio_io;
 
 use core::{ClientMessage, DummyNotify, LineCodec, Player, PollReady, ServerMessage};
 use futures::{Future, Stream, Sink};
-use futures::executor::{self, Notify};
-use futures::future;
+use futures::executor;
 use futures::sync::mpsc;
-use futures_cpupool::CpuPool;
 use math::*;
 use std::io;
-use std::sync::Arc;
 use std::str;
 use std::thread;
-use std::time::*;
 use tokio_core::net::TcpListener;
 use tokio_core::reactor::Core;
 use tokio_io::AsyncRead;
@@ -34,12 +30,10 @@ fn main() {
 
         // Bind the server's socket.
         let addr = "127.0.0.1:1234".parse().unwrap();
-        let mut incoming = TcpListener::bind(&addr, &handle)
+        let incoming = TcpListener::bind(&addr, &handle)
             .expect("Failed to bind socket")
             .incoming()
-            .for_each(move |(socket, address)| {
-                println!("Got me a client: {:?}", address);
-
+            .for_each(move |(socket, _)| {
                 // Create channels for passing incoming and outgoing messages to and from the main
                 // game.
                 let (incoming_sender, incoming_receiver) = mpsc::unbounded();
@@ -49,7 +43,7 @@ fn main() {
                 // delineate messages.
                 let (mut sink, stream) = socket.framed(LineCodec).split();
 
-                // Setup tasks for pumping incoming and outgoing messages.
+                // Setup task for pumping incoming messages to the game thread.
                 let incoming_task = stream
                     .map(|message_string| {
                         serde_json::from_str(&*message_string)
@@ -64,12 +58,13 @@ fn main() {
                         match error.kind() {
                             io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted => {}
 
-                            default => {
-                                panic!("Error with incoming message: {:?}", error.kind());
+                            kind @ _ => {
+                                panic!("Error with incoming message: {:?}", kind);
                             }
                         }
                     });
 
+                // Setup task for pumping outgoing messages from the game thread to the client.
                 let outgoing_task = outgoing_receiver
                     .map(|message: ServerMessage| {
                         serde_json::to_string(&message)
@@ -103,7 +98,7 @@ fn main() {
     // Run the main loop of the game.
     loop {
         for client_result in PollReady::new(&mut client_receiver, &notify) {
-            let (sender, receiver) = client_result.expect("Error receiving client on main thread");
+            let (sender, _) = client_result.expect("Error receiving client on main thread");
             println!("Main game got some client channels!");
             sender.unbounded_send(ServerMessage::PlayerUpdate(Player {
                 position: Point::origin(),

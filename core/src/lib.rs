@@ -59,6 +59,7 @@ impl Encoder for LineCodec {
     }
 }
 
+/// Provides an iterator yielding the currently ready items from a `Stream`.
 pub struct PollReady<'a, S: 'a> {
     stream: &'a mut Spawn<S>,
     notify_handle: Arc<DummyNotify>,
@@ -97,7 +98,7 @@ impl DummyNotify {
 }
 
 impl Notify for DummyNotify {
-    fn notify(&self, id: usize) {}
+    fn notify(&self, _: usize) {}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
