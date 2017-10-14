@@ -2,26 +2,23 @@ extern crate core;
 extern crate futures;
 extern crate gl_winit;
 extern crate polygon;
-extern crate serde_json;
 extern crate tokio_core;
 extern crate tokio_io;
 extern crate winit;
 
-use core::{ClientMessage, DummyNotify, LineCodec, Player, PollReady, ServerMessage};
+use core::{ClientMessage, DummyNotify, Player, PollReady, ServerMessage};
 use gl_winit::CreateContext;
-use std::io;
 use std::str;
 use std::thread;
 use std::time::{Duration, Instant};
-use futures::{Async, Future, Stream};
+use futures::Async;
 use futures::executor;
-use futures::sync::mpsc;
+use futures::future;
 use futures::sync::oneshot;
 use polygon::*;
 use polygon::gl::GlRender;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Core;
-use tokio_io::AsyncRead;
 use winit::*;
 
 fn main() {
@@ -48,54 +45,12 @@ fn main() {
         let connect_to_server = TcpStream::connect(&addr, &handle);
         let stream = core.run(connect_to_server).expect("Failed to connect to server");
 
-        // Create channels for passing incoming and outgoing messages to and from the main
-        // game.
-        let (incoming_sender, incoming_receiver) = mpsc::unbounded();
-        let (outgoing_sender, outgoing_receiver) = mpsc::unbounded();
+        let channels = core::handle_tcp_stream::<ClientMessage, ServerMessage>(stream, &handle);
 
-        // Convert the codec into a pair stream/sink pair using our codec to
-        // delineate messages.
-        let (sink, stream) = stream.framed(LineCodec).split();
-
-        // Setup task for pumping incoming messages to the game thread.
-        let incoming_task = stream
-            .map(|message_string| {
-                serde_json::from_str(&*message_string)
-                    .expect("Failed to deserialize JSON from client")
-            })
-            .for_each(move |message: ServerMessage| {
-                incoming_sender.unbounded_send(message)
-                    .expect("Failed to send incoming message to game thread");
-                Ok(())
-            })
-            .map_err(|error| {
-                match error.kind() {
-                    io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted => {}
-
-                    kind @ _ => {
-                        panic!("Error with incoming message: {:?}", kind);
-                    }
-                }
-            });
-
-        // Setup task for pumping outgoing messages from the game thread to the server.
-        let outgoing_task = outgoing_receiver
-            .map(|message: ServerMessage| {
-                serde_json::to_string(&message)
-                    .expect("Failed to serialize message to JSON")
-            })
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Receiver error"))
-            .forward(sink)
-            .map(|_| {})
-            .map_err(|error| {
-                panic!("Error sending outgoing message: {:?}", error);
-            });
-
-        connection_sender.send((outgoing_sender, incoming_receiver))
+        connection_sender.send(channels)
             .expect("Failed to send channels to game thread");
 
-        handle.spawn(outgoing_task);
-        core.run(incoming_task).expect("Error with incoming messages");
+        core.run(future::empty::<(), ()>()).unwrap();
     });
 
     let notify = DummyNotify::new();

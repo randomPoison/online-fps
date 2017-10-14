@@ -9,7 +9,6 @@ core = { path = "../core" }
 futures = "0.1"
 gl-winit = { git = "https://github.com/randomPoison/polygon" }
 polygon = { git = "https://github.com/randomPoison/polygon" }
-serde_json = "1.0"
 tokio-io = "0.1"
 tokio-core = "0.1"
 tokio-proto = "0.1"
