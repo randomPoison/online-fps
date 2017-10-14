@@ -7,7 +7,7 @@ extern crate tokio_core;
 extern crate tokio_io;
 
 use core::{ClientMessage, DummyNotify, LineCodec, Player, PollReady, ServerMessage};
-use futures::{Future, Stream, Sink};
+use futures::{Future, Stream};
 use futures::executor;
 use futures::sync::mpsc;
 use math::*;
@@ -46,7 +46,7 @@ fn main() {
                 // Setup task for pumping incoming messages to the game thread.
                 let incoming_task = stream
                     .map(|message_string| {
-                        serde_json::from_str(&*message_string)
+                        serde_json::from_str::<ClientMessage>(&*message_string)
                             .expect("Failed to deserialize JSON from client")
                     })
                     .for_each(move |message: ClientMessage| {
@@ -65,20 +65,17 @@ fn main() {
                     });
 
                 // Setup task for pumping outgoing messages from the game thread to the client.
-                let outgoing_receiver = outgoing_receiver
+                let outgoing_task = outgoing_receiver
                     .map(|message: ServerMessage| {
                         serde_json::to_string(&message)
                             .expect("Failed to serialize message to JSON")
                     })
+                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "Receiver error"))
+                    .forward(sink)
+                    .map(|_| {})
                     .map_err(|error| {
-                        println!("Error with outgoing message: {:?}", error);
+                        panic!("Error sending outgoing message: {:?}", error);
                     });
-                let outgoing_task = sink
-                    .sink_map_err(|error| {
-                        panic!("Sink error: {:?}", error);
-                    })
-                    .send_all(outgoing_receiver)
-                    .map(|_| {});
 
                 // Spawn the tasks onto the reactor.
                 handle.spawn(incoming_task);

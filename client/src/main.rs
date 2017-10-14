@@ -13,7 +13,7 @@ use std::io;
 use std::str;
 use std::thread;
 use std::time::{Duration, Instant};
-use futures::{Async, Future, Sink, Stream};
+use futures::{Async, Future, Stream};
 use futures::executor;
 use futures::sync::mpsc;
 use futures::sync::oneshot;
@@ -55,7 +55,7 @@ fn main() {
 
         // Convert the codec into a pair stream/sink pair using our codec to
         // delineate messages.
-        let (mut sink, stream) = stream.framed(LineCodec).split();
+        let (sink, stream) = stream.framed(LineCodec).split();
 
         // Setup task for pumping incoming messages to the game thread.
         let incoming_task = stream
@@ -64,7 +64,6 @@ fn main() {
                     .expect("Failed to deserialize JSON from client")
             })
             .for_each(move |message: ServerMessage| {
-                println!("I/O thread received incoming message: {:?}", message);
                 incoming_sender.unbounded_send(message)
                     .expect("Failed to send incoming message to game thread");
                 Ok(())
@@ -81,16 +80,15 @@ fn main() {
 
         // Setup task for pumping outgoing messages from the game thread to the server.
         let outgoing_task = outgoing_receiver
-            .map(|message: ClientMessage| {
+            .map(|message: ServerMessage| {
                 serde_json::to_string(&message)
                     .expect("Failed to serialize message to JSON")
             })
-            .for_each(move |message| {
-                sink.start_send(message).expect("Failed to start send on outgoing message");
-                Ok(())
-            })
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Receiver error"))
+            .forward(sink)
+            .map(|_| {})
             .map_err(|error| {
-                println!("Error with outgoing message: {:?}", error);
+                panic!("Error sending outgoing message: {:?}", error);
             });
 
         connection_sender.send((outgoing_sender, incoming_receiver))
