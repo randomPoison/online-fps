@@ -41,7 +41,7 @@ fn main() {
 
                 // Convert the codec into a pair stream/sink pair using our codec to
                 // delineate messages.
-                let (mut sink, stream) = socket.framed(LineCodec).split();
+                let (sink, stream) = socket.framed(LineCodec).split();
 
                 // Setup task for pumping incoming messages to the game thread.
                 let incoming_task = stream
@@ -65,18 +65,20 @@ fn main() {
                     });
 
                 // Setup task for pumping outgoing messages from the game thread to the client.
-                let outgoing_task = outgoing_receiver
+                let outgoing_receiver = outgoing_receiver
                     .map(|message: ServerMessage| {
                         serde_json::to_string(&message)
                             .expect("Failed to serialize message to JSON")
                     })
-                    .for_each(move |message| {
-                        sink.start_send(message).expect("Failed to start send on outgoing message");
-                        Ok(())
-                    })
                     .map_err(|error| {
                         println!("Error with outgoing message: {:?}", error);
                     });
+                let outgoing_task = sink
+                    .sink_map_err(|error| {
+                        panic!("Sink error: {:?}", error);
+                    })
+                    .send_all(outgoing_receiver)
+                    .map(|_| {});
 
                 // Spawn the tasks onto the reactor.
                 handle.spawn(incoming_task);
