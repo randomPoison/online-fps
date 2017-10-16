@@ -15,8 +15,13 @@ use futures::executor::{self, Spawn};
 use futures::future;
 use futures::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures::sync::oneshot;
-use polygon::*;
+use polygon::{Renderer};
+use polygon::anchor::{Anchor, AnchorId};
+use polygon::camera::Camera;
+use polygon::geometry::mesh::MeshBuilder;
 use polygon::gl::GlRender;
+use polygon::math::{Color, Point};
+use polygon::mesh_instance::MeshInstance;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Core;
 use winit::*;
@@ -25,6 +30,13 @@ const W_SCAN: u32 = 0x11;
 const A_SCAN: u32 = 0x1e;
 const S_SCAN: u32 = 0x1f;
 const D_SCAN: u32 = 0x20;
+
+static VERTEX_POSITIONS: [f32; 12] = [
+    -1.0, -1.0, 0.0, 1.0,
+     1.0, -1.0, 0.0, 1.0,
+     0.0,  1.0, 0.0, 1.0,
+];
+static INDICES: [u32; 3] = [0, 1, 2];
 
 fn main() {
     // Open a window.
@@ -71,11 +83,7 @@ fn main() {
                 ServerMessage::PlayerUpdate(player) => player,
             };
 
-            GameState {
-                sender,
-                receiver: executor::spawn(receiver),
-                player,
-            }
+            (sender, executor::spawn(receiver), player)
         });
     let mut wait_for_player = executor::spawn(wait_for_player);
 
@@ -84,8 +92,8 @@ fn main() {
     let mut input_state = InputState::default();
 
     // Run the main loop of the game, rendering once per frame.
-    let frame_time = Duration::from_secs(1) / 60;
-    let mut next_frame_time = Instant::now() + frame_time;
+    let target_frame_time = Duration::from_secs(1) / 60;
+    let mut frame_start = Instant::now() + target_frame_time;
     loop {
         // Eat any window events to determine if the window has closed.
         let mut window_open = true;
@@ -143,8 +151,51 @@ fn main() {
                 let async = wait_for_player
                     .poll_future_notify(&notify, 0)
                     .expect("I/O thread cancelled sending connection");
-                if let Async::Ready(state) = async {
-                    game_state = Some(state)
+                if let Async::Ready((sender, receiver, player)) = async {
+                    // Create a player avatar in the scene with the player information.
+                    // ================================================================
+
+                    // Build a triangle mesh.
+                    let mesh = MeshBuilder::new()
+                        .set_position_data(Point::slice_from_f32_slice(&VERTEX_POSITIONS))
+                        .set_indices(&INDICES)
+                        .build()
+                        .unwrap();
+
+                    // Send the mesh to the GPU.
+                    let gpu_mesh = renderer.register_mesh(&mesh);
+
+                    // Create an anchor and register it with the renderer.
+                    let anchor = Anchor::new();
+                    let player_anchor = renderer.register_anchor(anchor);
+
+                    // Setup the material for the mesh.
+                    let mut material = renderer.default_material();
+                    material.set_color("surface_color", Color::rgb(1.0, 0.0, 0.0));
+
+                    // Create a mesh instance, attach it to the anchor, and register it.
+                    let mut mesh_instance = MeshInstance::with_owned_material(gpu_mesh, material);
+                    mesh_instance.set_anchor(player_anchor);
+                    renderer.register_mesh_instance(mesh_instance);
+
+                    // Create a camera and an anchor for it.
+                    let mut camera_anchor = Anchor::new();
+                    camera_anchor.set_position(Point::new(0.0, 0.0, 10.0));
+                    let camera_anchor_id = renderer.register_anchor(camera_anchor);
+
+                    let mut camera = Camera::default();
+                    camera.set_anchor(camera_anchor_id);
+                    renderer.register_camera(camera);
+
+                    // Set ambient color to pure white so we don't need to worry about lighting.
+                    renderer.set_ambient_light(Color::rgb(1.0, 1.0, 1.0));
+
+                    game_state = Some(GameState {
+                        sender,
+                        receiver,
+                        player,
+                        player_anchor,
+                    });
                 }
             }
         }
@@ -153,10 +204,15 @@ fn main() {
         renderer.draw();
 
 
-        // Wait for the next frame.
-        // TODO: Do this in a less horribly ineffiecient method.
-        while Instant::now() < next_frame_time {}
-        next_frame_time += frame_time;
+        // Determine the next frame's start time, dropping frames if we missed the frame time.
+        while frame_start < Instant::now() {
+            frame_start += target_frame_time;
+        }
+
+        // Now wait until we've returned to the frame cadence before beginning the next frame.
+        while Instant::now() < frame_start {
+            thread::sleep(Duration::new(0, 1_000_000));
+        }
     }
 }
 
@@ -164,4 +220,5 @@ struct GameState {
     sender: UnboundedSender<ClientMessage>,
     receiver: Spawn<UnboundedReceiver<ServerMessage>>,
     player: Player,
+    player_anchor: AnchorId,
 }
