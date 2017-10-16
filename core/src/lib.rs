@@ -29,6 +29,14 @@ pub struct Player {
     pub orientation: Orientation,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InputState {
+    pub up: bool,
+    pub down: bool,
+    pub left: bool,
+    pub right: bool,
+}
+
 pub fn handle_tcp_stream<O, I>(
     socket: TcpStream,
     handle: &Handle,
@@ -87,44 +95,6 @@ where
     (outgoing_sender, incoming_receiver)
 }
 
-#[derive(Debug)]
-pub struct LineCodec;
-
-impl Decoder for LineCodec {
-    type Item = String;
-    type Error = io::Error;
-
-    fn decode(&mut self, buf: &mut BytesMut) -> io::Result<Option<String>> {
-        match buf.iter().position(|&b| b == b'\n') {
-            Some(i) => {
-                // remove the serialized frame from the buffer.
-                let line = buf.split_to(i);
-
-                // Also remove the '\n'.
-                buf.split_to(1);
-
-                // Turn this data into a UTF string and return it in a Frame.
-                str::from_utf8(&line)
-                    .map(|string| Some(string.to_string()))
-                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "invalid UTF-8"))
-            }
-
-            None => Ok(None),
-        }
-    }
-}
-
-impl Encoder for LineCodec {
-    type Item = String;
-    type Error = io::Error;
-
-    fn encode(&mut self, msg: String, buf: &mut BytesMut) -> io::Result<()> {
-        buf.extend(msg.as_bytes());
-        buf.extend(b"\n");
-        Ok(())
-    }
-}
-
 /// Provides an iterator yielding the currently ready items from a `Stream`.
 pub struct PollReady<'a, S: 'a> {
     stream: &'a mut Spawn<S>,
@@ -174,5 +144,43 @@ pub enum ServerMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
-    PlayerUpdate(Player),
+    Input(InputState),
+}
+
+#[derive(Debug)]
+struct LineCodec;
+
+impl Decoder for LineCodec {
+    type Item = String;
+    type Error = io::Error;
+
+    fn decode(&mut self, buf: &mut BytesMut) -> io::Result<Option<String>> {
+        match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => {
+                // remove the serialized frame from the buffer.
+                let line = buf.split_to(i);
+
+                // Also remove the '\n'.
+                buf.split_to(1);
+
+                // Turn this data into a UTF string and return it in a Frame.
+                str::from_utf8(&line)
+                    .map(|string| Some(string.to_string()))
+                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "invalid UTF-8"))
+            }
+
+            None => Ok(None),
+        }
+    }
+}
+
+impl Encoder for LineCodec {
+    type Item = String;
+    type Error = io::Error;
+
+    fn encode(&mut self, msg: String, buf: &mut BytesMut) -> io::Result<()> {
+        buf.extend(msg.as_bytes());
+        buf.extend(b"\n");
+        Ok(())
+    }
 }

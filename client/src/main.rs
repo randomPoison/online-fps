@@ -6,20 +6,25 @@ extern crate tokio_core;
 extern crate tokio_io;
 extern crate winit;
 
-use core::{ClientMessage, DummyNotify, Player, PollReady, ServerMessage};
+use core::{ClientMessage, DummyNotify, InputState, Player, PollReady, ServerMessage};
 use gl_winit::CreateContext;
-use std::str;
 use std::thread;
 use std::time::{Duration, Instant};
-use futures::Async;
-use futures::executor;
+use futures::{Async, Future, Stream};
+use futures::executor::{self, Spawn};
 use futures::future;
+use futures::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures::sync::oneshot;
 use polygon::*;
 use polygon::gl::GlRender;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Core;
 use winit::*;
+
+const W_SCAN: u32 = 0x11;
+const A_SCAN: u32 = 0x1e;
+const S_SCAN: u32 = 0x1f;
+const D_SCAN: u32 = 0x20;
 
 fn main() {
     // Open a window.
@@ -54,10 +59,29 @@ fn main() {
     });
 
     let notify = DummyNotify::new();
-    let mut connection_receiver = executor::spawn(connection_receiver);
+
+    let wait_for_player = connection_receiver
+        .then(|result| {
+            let (sender, receiver) = result.expect("Error receiving the");
+            receiver.into_future().map(|(message, receiver)| (message, sender, receiver))
+        })
+        .map(|(message, sender, receiver)| {
+            let message = message.expect("Didn't get a message from the server");
+            let player = match message {
+                ServerMessage::PlayerUpdate(player) => player,
+            };
+
+            GameState {
+                sender,
+                receiver: executor::spawn(receiver),
+                player,
+            }
+        });
+    let mut wait_for_player = executor::spawn(wait_for_player);
 
     // Game state variables.
-    let mut connection = None;
+    let mut game_state: Option<GameState> = None;
+    let mut input_state = InputState::default();
 
     // Run the main loop of the game, rendering once per frame.
     let frame_time = Duration::from_secs(1) / 60;
@@ -71,6 +95,24 @@ fn main() {
                     window_open = false;
                 }
 
+                Event::WindowEvent { event: WindowEvent::KeyboardInput { input, .. }, .. } => {
+                    match (input.scancode, input.state) {
+                        (W_SCAN, ElementState::Pressed) => { input_state.up = true; }
+                        (W_SCAN, ElementState::Released) => { input_state.up = false; }
+
+                        (A_SCAN, ElementState::Pressed) => { input_state.left = true; }
+                        (A_SCAN, ElementState::Released) => { input_state.left = false; }
+
+                        (S_SCAN, ElementState::Pressed) => { input_state.down = true; }
+                        (S_SCAN, ElementState::Released) => { input_state.down = false; }
+
+                        (D_SCAN, ElementState::Pressed) => { input_state.right = true; }
+                        (D_SCAN, ElementState::Released) => { input_state.right = false; }
+
+                        _ => {}
+                    }
+                }
+
                 _ => {}
             }
         });
@@ -78,24 +120,31 @@ fn main() {
         // Don't run the rest of the frame if the window has closed.
         if !window_open { break; }
 
-        match connection.take() {
-            Some((sender, mut receiver)) => {
-                for message_result in PollReady::new(&mut receiver, &notify) {
+        match game_state.take() {
+            Some(mut state) => {
+                for message_result in PollReady::new(&mut state.receiver, &notify) {
                     let message = message_result.unwrap();
-                    println!("Got a message: {:?}", message);
+                    match message {
+                        ServerMessage::PlayerUpdate(player) => {
+                            state.player = player;
+                        }
+                    }
                 }
 
-                connection = Some((sender, receiver));
+                // Send the current input to the server.
+                state.sender.unbounded_send(ClientMessage::Input(input_state.clone())).unwrap();
+
+                // TODO: Update the current state with the renderer.
+
+                game_state = Some(state);
             }
 
             None => {
-                let async = connection_receiver
+                let async = wait_for_player
                     .poll_future_notify(&notify, 0)
                     .expect("I/O thread cancelled sending connection");
-                if let Async::Ready((sender, receiver)) = async {
-                    let sender = executor::spawn(sender);
-                    let receiver = executor::spawn(receiver);
-                    connection = Some((sender, receiver));
+                if let Async::Ready(state) = async {
+                    game_state = Some(state)
                 }
             }
         }
@@ -109,4 +158,10 @@ fn main() {
         while Instant::now() < next_frame_time {}
         next_frame_time += frame_time;
     }
+}
+
+struct GameState {
+    sender: UnboundedSender<ClientMessage>,
+    receiver: Spawn<UnboundedReceiver<ServerMessage>>,
+    player: Player,
 }
