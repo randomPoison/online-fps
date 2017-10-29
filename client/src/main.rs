@@ -7,6 +7,7 @@ extern crate tokio_io;
 extern crate winit;
 
 use core::{ClientMessage, DummyNotify, InputState, Player, PollReady, ServerMessage};
+use core::net;
 use gl_winit::CreateContext;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -62,7 +63,7 @@ fn main() {
         let connect_to_server = TcpStream::connect(&addr, &handle);
         let stream = core.run(connect_to_server).expect("Failed to connect to server");
 
-        let channels = core::handle_tcp_stream::<ClientMessage, ServerMessage>(stream, &handle);
+        let channels = net::handle_tcp_stream::<ClientMessage, ServerMessage>(stream, &handle);
 
         connection_sender.send(channels)
             .expect("Failed to send channels to game thread");

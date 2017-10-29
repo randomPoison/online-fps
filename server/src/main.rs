@@ -6,6 +6,7 @@ extern crate tokio_core;
 extern crate tokio_io;
 
 use core::{ClientMessage, DummyNotify, InputState, Player, PollReady, ServerMessage};
+use core::net;
 use futures::Stream;
 use futures::executor::{self, Spawn};
 use futures::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -32,7 +33,7 @@ fn main() {
             .incoming()
             .for_each(move |(socket, _)| {
                 let channels =
-                    core::handle_tcp_stream::<ServerMessage, ClientMessage>(socket, &handle);
+                    net::handle_tcp_stream::<ServerMessage, ClientMessage>(socket, &handle);
 
                 // Send the incoming and outgoing message channels to the main game.
                 client_sender.unbounded_send(channels)
