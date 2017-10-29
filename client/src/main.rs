@@ -20,7 +20,7 @@ use polygon::anchor::{Anchor, AnchorId};
 use polygon::camera::Camera;
 use polygon::geometry::mesh::MeshBuilder;
 use polygon::gl::GlRender;
-use polygon::math::{Color, Point};
+use polygon::math::{Color, Orientation, Point, Vector3};
 use polygon::mesh_instance::MeshInstance;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Core;
@@ -142,7 +142,12 @@ fn main() {
                 // Send the current input to the server.
                 state.sender.unbounded_send(ClientMessage::Input(input_state.clone())).unwrap();
 
-                // TODO: Update the current state with the renderer.
+                // Update the current state with the renderer.
+                {
+                    let anchor = renderer.get_anchor_mut(state.player_anchor).unwrap();
+                    anchor.set_position(state.player.position);
+                    anchor.set_orientation(state.player.orientation);
+                }
 
                 game_state = Some(state);
             }
@@ -180,7 +185,8 @@ fn main() {
 
                     // Create a camera and an anchor for it.
                     let mut camera_anchor = Anchor::new();
-                    camera_anchor.set_position(Point::new(0.0, 0.0, 10.0));
+                    camera_anchor.set_position(Point::new(0.0, 10.0, 0.0));
+                    camera_anchor.set_orientation(Orientation::look_rotation(Vector3::DOWN, Vector3::FORWARD));
                     let camera_anchor_id = renderer.register_anchor(camera_anchor);
 
                     let mut camera = Camera::default();

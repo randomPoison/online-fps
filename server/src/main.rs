@@ -59,7 +59,7 @@ fn main() {
             let (sender, receiver) = client_result.expect("Error receiving client on main thread");
             let player = Player {
                 position: Point::origin(),
-                orientation: Orientation::new(),
+                orientation: Orientation::look_rotation(Vector3::DOWN, Vector3::FORWARD),
             };
             sender.unbounded_send(ServerMessage::PlayerUpdate(player.clone())).expect("Failed to send message to client");
             clients.push(Client {
