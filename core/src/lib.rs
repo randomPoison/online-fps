@@ -22,7 +22,23 @@ pub struct Player {
     pub orientation: Orientation,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+impl Player {
+    /// Performs a single frame step for the player based on it inputs.
+    ///
+    /// `delta` is in seconds.
+    pub fn step(&mut self, input: &InputState, delta: f32) {
+        let mut direction = Vector3::default();
+        if input.up { direction += Vector3::new(0.0, 0.0, -1.0); }
+        if input.down { direction += Vector3::new(0.0, 0.0, 1.0); }
+        if input.left { direction += Vector3::new(-1.0, 0.0, 0.0); }
+        if input.right { direction += Vector3::new(1.0, 0.0, 0.0); }
+
+        // Move the player based on the movement direction.
+        self.position += direction * delta;
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct InputState {
     pub up: bool,
     pub down: bool,
@@ -73,13 +89,44 @@ impl Notify for DummyNotify {
     fn notify(&self, _: usize) {}
 }
 
+/// A message sent from the server to the clients.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ServerMessage {
+pub struct ServerMessage {
+    /// On which frame the server sent this message.
+    ///
+    /// Used by client to sequence messages from the server, and discard old server messages.
+    pub server_frame: usize,
+
+    /// The most recent client frame the server knows about.
+    ///
+    /// Used by the client to determine how much history needs to be re-simulated locally.
+    pub client_frame: usize,
+
+    /// The main body of the message.
+    pub body: ServerMessageBody,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ServerMessageBody {
     PlayerUpdate(Player),
 }
 
+/// A message sent from the client to the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ClientMessage {
-    Input(InputState),
+pub struct ClientMessage {
+    /// The client's current frame.
+    ///
+    /// This is not used directly by the server, rather it is sent back to the client in the
+    /// server's messages, that way the client can know how far behind the server is in
+    /// processing input.
+    pub frame: usize,
+
+    /// The main body of the message.
+    pub body: ClientMessageBody,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ClientMessageBody {
+    Connect,
+    Input(InputState),
+}
