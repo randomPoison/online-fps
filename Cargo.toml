@@ -4,3 +4,6 @@ members = [
     "core/",
     "server/",
 ]
+
+[profile.dev]
+panic = "abort"

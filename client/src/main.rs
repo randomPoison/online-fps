@@ -7,16 +7,15 @@ extern crate tokio_io;
 extern crate winit;
 
 use core::{ClientMessage, ClientMessageBody, DummyNotify, InputState, Player, PollReady, ServerMessage, ServerMessageBody};
-use core::net;
+use core::net::Client;
 use gl_winit::CreateContext;
 use std::collections::VecDeque;
-use std::net::SocketAddr;
 use std::thread;
 use std::time::{Duration, Instant};
 use futures::{Async, Future, Stream};
 use futures::executor::{self, Spawn};
 use futures::future;
-use futures::sync::mpsc::UnboundedReceiver;
+use futures::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures::sync::oneshot;
 use polygon::{Renderer};
 use polygon::anchor::{Anchor, AnchorId};
@@ -54,19 +53,25 @@ fn main() {
 
     let server_address = "127.0.0.1:1234".parse().unwrap();
     // Spawn a thread dedicated to handling all I/O with clients.
-    let (channel_sender, channel_receiver) = oneshot::channel();
+    let (_channel_sender, channel_receiver) =
+        oneshot::channel::<(UnboundedSender<ClientMessage>, UnboundedReceiver<ServerMessage>)>();
     thread::spawn(move || {
         // Create the event loop that will drive network communication.
         let mut core = Core::new().unwrap();
         let handle = core.handle();
 
         // Bind to the address we want to listen on.
-        let address = "127.0.0.1:1235".parse().unwrap();
-        let channels = net::pump_messages::<ClientMessage, ServerMessage>(&address, &handle)
-            .expect("Failed to bind UDP socket");
+        let wait_for_connection = Client::connect(&server_address, &handle)
+            .expect("Failed to bind socket")
+            .then(move |connection_result| {
+                let connection = connection_result.expect("Error establishing connection");
 
-        channel_sender.send(channels)
-            .expect("Failed to send channels to game thread");
+                println!("Established connection: {:?}", connection);
+
+                Ok(())
+            });
+
+        handle.spawn(wait_for_connection);
 
         // Run an empty future so that the reactor will run the send end receieve futures forever.
         core.run(future::empty::<(), ()>()).unwrap();
@@ -77,7 +82,7 @@ fn main() {
     let (sender, receiver) = channel_receiver.wait().expect("Error receiving the channels");
     let wait_for_player = receiver.into_future()
         .map(|(message, receiver)| {
-            let (_, message) = message.expect("Didn't get a message from the server");
+            let message = message.expect("Didn't get a message from the server");
             let player = match message.body {
                 ServerMessageBody::PlayerUpdate(player) => player,
             };
@@ -141,13 +146,13 @@ fn main() {
                     frame: frame_count,
                     body: ClientMessageBody::Input(input_state.clone()),
                 };
-                sender.unbounded_send((server_address, message)).unwrap();
+                sender.unbounded_send(message).unwrap();
 
                 let mut received_message = false;
 
                 // Process any messages that we have received from the platform.
                 for message_result in PollReady::new(&mut state.receiver, &notify) {
-                    let (_, message) = message_result.unwrap();
+                    let message = message_result.expect("Some kind of error with message");
 
                     assert!(
                         message.client_frame <= frame_count,
@@ -268,10 +273,10 @@ fn main() {
                         server_client_frame: 0,
                     });
                 } else {
-                    sender.unbounded_send((server_address, ClientMessage {
+                    sender.unbounded_send(ClientMessage {
                         frame: frame_count,
                         body: ClientMessageBody::Connect,
-                    })).expect("Failed to send message");
+                    }).expect("Failed to send message");
                 }
             }
         }
@@ -294,7 +299,7 @@ fn main() {
 
 #[derive(Debug)]
 struct GameState {
-    receiver: Spawn<UnboundedReceiver<(SocketAddr, ServerMessage)>>,
+    receiver: Spawn<UnboundedReceiver<ServerMessage>>,
     player_anchor: AnchorId,
 
     // Local state.

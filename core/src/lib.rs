@@ -1,6 +1,9 @@
-extern crate bytes;
+extern crate bincode;
+extern crate byteorder;
 extern crate futures;
 extern crate polygon_math as math;
+extern crate rand;
+extern crate ring;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
