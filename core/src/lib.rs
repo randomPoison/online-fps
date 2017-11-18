@@ -1,23 +1,15 @@
-extern crate bincode;
-extern crate byteorder;
 extern crate futures;
 extern crate polygon_math as math;
 extern crate rand;
-extern crate ring;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
-extern crate serde_json;
-extern crate tokio_core;
-extern crate tokio_io;
 
 use futures::{Async, Stream};
 use futures::executor::{Notify, Spawn};
 use math::*;
 use std::str;
 use std::sync::Arc;
-
-pub mod net;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {

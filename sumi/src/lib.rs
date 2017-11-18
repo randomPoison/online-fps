@@ -1,7 +1,16 @@
-use bincode;
+extern crate bincode;
+extern crate byteorder;
+extern crate futures;
+extern crate rand;
+extern crate ring;
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
+extern crate tokio_core;
+
 use byteorder::{NetworkEndian, ReadBytesExt, WriteBytesExt};
 use futures::{Async, Future, Poll, Stream};
-use rand::{self, Rng};
+use rand::Rng;
 use rand::os::OsRng;
 use ring::aead::{self, Algorithm, CHACHA20_POLY1305, OpeningKey, SealingKey};
 use ring::digest::SHA512;
@@ -54,10 +63,10 @@ static ALGORITHM: &'static Algorithm = &CHACHA20_POLY1305;
 /// # Examples
 ///
 /// ```no_run
-/// # extern crate core;
+/// # extern crate sumi;
 /// # extern crate futures;
 /// # extern crate tokio_core;
-/// use core::net::ConnectionListener;
+/// use sumi::ConnectionListener;
 /// use futures::Stream;
 /// use tokio_core::reactor::Core;
 ///
@@ -119,9 +128,9 @@ impl ConnectionListener {
     /// Create a connection listener bound to `127.0.0.1:80`:
     ///
     /// ```no_run
+    /// # extern crate sumi;
     /// # extern crate tokio_core;
-    /// # extern crate core;
-    /// use core::net::ConnectionListener;
+    /// use sumi::ConnectionListener;
     /// use tokio_core::reactor::Core;
     ///
     /// # fn main() {
@@ -134,10 +143,10 @@ impl ConnectionListener {
     /// listener bound to `127.0.0.1:443`:
     ///
     /// ```no_run
+    /// # extern crate sumi;
     /// # extern crate tokio_core;
-    /// # extern crate core;
-    /// use core::net::ConnectionListener;
     /// use std::net::SocketAddr;
+    /// use sumi::ConnectionListener;
     /// use tokio_core::reactor::Core;
     ///
     /// # fn main() {
@@ -206,9 +215,9 @@ impl ConnectionListener {
     /// # Examples
     ///
     /// ```no_run
+    /// # extern crate sumi;
     /// # extern crate tokio_core;
-    /// # extern crate core;
-    /// use core::net::ConnectionListener;
+    /// use sumi::ConnectionListener;
     /// use std::net::{SocketAddr, SocketAddrV4, Ipv4Addr};
     /// use tokio_core::reactor::Core;
     ///

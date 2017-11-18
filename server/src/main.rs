@@ -2,14 +2,14 @@ extern crate core;
 extern crate futures;
 extern crate futures_cpupool;
 extern crate polygon_math as math;
+extern crate sumi;
 extern crate tokio_core;
-extern crate tokio_io;
 
 use core::{DummyNotify, InputState, Player};
-use core::net::ConnectionListener;
 use futures::{Stream};
 use std::thread;
 use std::time::{Duration, Instant};
+use sumi::ConnectionListener;
 use tokio_core::reactor::Core;
 
 fn main() {

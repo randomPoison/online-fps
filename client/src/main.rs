@@ -2,12 +2,11 @@ extern crate core;
 extern crate futures;
 extern crate gl_winit;
 extern crate polygon;
+extern crate sumi;
 extern crate tokio_core;
-extern crate tokio_io;
 extern crate winit;
 
 use core::{ClientMessage, ClientMessageBody, DummyNotify, InputState, Player, PollReady, ServerMessage, ServerMessageBody};
-use core::net::Client;
 use gl_winit::CreateContext;
 use std::collections::VecDeque;
 use std::thread;
@@ -24,6 +23,7 @@ use polygon::geometry::mesh::MeshBuilder;
 use polygon::gl::GlRender;
 use polygon::math::{Color, Orientation, Point, Vector3};
 use polygon::mesh_instance::MeshInstance;
+use sumi::Client;
 use tokio_core::reactor::Core;
 use winit::*;
 
