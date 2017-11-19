@@ -6,6 +6,7 @@ authors = ["David LeGare <excaliburhissheath@gmail.com>"]
 [dependencies]
 bincode = "0.9"
 byteorder = "1.0"
+crc = "1.5"
 futures = "0.1"
 rand = "0.3"
 ring = "0.12"

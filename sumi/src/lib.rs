@@ -1,5 +1,6 @@
 extern crate bincode;
 extern crate byteorder;
+extern crate crc;
 extern crate futures;
 extern crate rand;
 extern crate ring;
@@ -8,7 +9,8 @@ extern crate serde;
 extern crate serde_derive;
 extern crate tokio_core;
 
-use byteorder::{NetworkEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{ByteOrder, NetworkEndian, ReadBytesExt, WriteBytesExt};
+use crc::crc32::{self, Digest, Hasher32};
 use futures::{Async, Future, Poll, Stream};
 use rand::Rng;
 use rand::os::OsRng;
@@ -17,6 +19,7 @@ use ring::digest::SHA512;
 use ring::pbkdf2;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::hash::Hasher;
 use std::io::{self, Cursor, Error, ErrorKind, Result};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::str;
@@ -42,8 +45,8 @@ const NONCE_LEN: usize = 12;
 // size of a cookie.
 const MAX_CIPHERTEXT_LEN: usize = MAX_COOKIE_LEN - NONCE_LEN;
 
-// The protocol ID is the first 32 bits of the MD5 hash of "sumi".
-const PROTOCOL_ID: u32 = 0x23b26d56;
+// The protocol ID is the first 64 bits of the MD5 hash of "sumi".
+const PROTOCOL_ID: u64 = 0x41008F06B7698109;
 
 const CONNECTION_REQUEST: u8 = 1;
 const CHALLENGE: u8 = 2;
@@ -255,7 +258,9 @@ impl Stream for ConnectionListener {
             // Decode the packet, discarding any packets that fail basic verification.
             let Packet { connection_id, data } = match decode(&self.read_buffer[.. bytes_read])? {
                 Some(packet) => { packet }
-                None => { continue; }
+                None => {
+                    continue;
+                }
             };
 
             match data {
@@ -354,7 +359,6 @@ impl Stream for ConnectionListener {
                     let cookie = match open_result {
                         Ok(cookie) => cookie,
                         Err(_) => {
-                            println!("Failed to open the cookie");
                             continue;
                         }
                     };
@@ -363,8 +367,7 @@ impl Stream for ConnectionListener {
                     // If it fails to deserialize, just discard the packet.
                     let cookie = match bincode::deserialize::<ChallengeCookie>(cookie) {
                         Ok(cookie) => cookie,
-                        Err(error) => {
-                            println!("Error deserializing cookie: {:?}", error);
+                        Err(_) => {
                             continue;
                         }
                     };
@@ -435,7 +438,6 @@ impl Stream for ConnectionListener {
 
                 // Ignore all other packet types.
                 _ => {
-                    println!("Ignoring packet: {:#x} {:?}", connection_id, data);
                     continue;
                 }
             }
@@ -513,7 +515,6 @@ impl Future for ClientNew {
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         // If we've taken too long, return a timeout error.
         if self.start_time.elapsed() > Duration::from_secs(1) {
-            println!("Timed out waiting to connect");
             return Err(ErrorKind::TimedOut.into());
         }
 
@@ -683,12 +684,23 @@ fn decode<'a>(buffer: &'a [u8]) -> Result<Option<Packet<'a>>> {
     // ID, and message type.
     if buffer.len() < 4 + 8 + 1 { return Ok(None); }
 
-    let mut cursor = Cursor::new(&buffer[..]);
+    // The first 4 bytes of the packet are the CRC32 checksum. We split it off from the rest
+    // of the packet so that we can verify that the checksum of the data matches the checksum
+    // in the header.
+    let (checksum, body) = buffer.split_at(4);
+    let checksum = NetworkEndian::read_u32(checksum);
 
-    // Verify that the received data starts with the protocol header, ignoring the packet
-    // otherwise.
-    let header = cursor.read_u32::<NetworkEndian>()?;
-    if header != PROTOCOL_ID { return Ok(None); }
+    // Calculate the checksum of the received data by digesting the implicit protocol header and
+    // the received packet data.
+    let mut digest = Digest::new(crc32::IEEE);
+    digest.write_u64(PROTOCOL_ID);
+    Hasher32::write(&mut digest, body);
+
+    // If the checksum in the packet's header doesn't match the calculated checksum, discard the
+    // packet.
+    if checksum != digest.sum32() { return Ok(None); }
+
+    let mut cursor = Cursor::new(body);
 
     // Read the connection ID from the packet.
     let connection_id = cursor.read_u64::<NetworkEndian>()?;
@@ -711,9 +723,9 @@ fn decode<'a>(buffer: &'a [u8]) -> Result<Option<Packet<'a>>> {
             let cookie_end = cookie_start + cookie_len;
 
             // Ignore the packet if the cookie len is just too long.
-            if cookie_end > buffer.len() { return Ok(None); }
+            if cookie_end > body.len() { return Ok(None); }
 
-            PacketData::Challenge(&buffer[cookie_start .. cookie_end])
+            PacketData::Challenge(&body[cookie_start .. cookie_end])
         }
 
         CHALLENGE_RESPONSE => {
@@ -722,9 +734,9 @@ fn decode<'a>(buffer: &'a [u8]) -> Result<Option<Packet<'a>>> {
             let cookie_end = cookie_start + cookie_len;
 
             // Ignore the packet if the cookie len is just too long.
-            if cookie_end > buffer.len() { return Ok(None); }
+            if cookie_end > body.len() { return Ok(None); }
 
-            PacketData::ChallengeResponse(&buffer[cookie_start .. cookie_end])
+            PacketData::ChallengeResponse(&body[cookie_start .. cookie_end])
         }
 
         CONNECTION_ACCEPTED => { PacketData::ConnectionAccepted }
@@ -740,8 +752,9 @@ fn encode<'a>(packet: Packet<'a>, buffer: &mut Vec<u8>) -> Result<()> {
     // Reset the output buffer before writing the packet.
     buffer.clear();
 
-    // Write the protocol ID first.
-    buffer.write_u32::<NetworkEndian>(PROTOCOL_ID)?;
+    // Write a placeholder for the checksum. We'll replace this with the real checksum after
+    // the rest of the packet has been written.
+    buffer.write_u32::<NetworkEndian>(0)?;
 
     // Write the connection ID.
     buffer.write_u64::<NetworkEndian>(packet.connection_id)?;
@@ -771,6 +784,17 @@ fn encode<'a>(packet: Packet<'a>, buffer: &mut Vec<u8>) -> Result<()> {
         PacketData::ConnectionAccepted => {}
     }
 
+    // Split the buffer into the leading checksum and the remaining body of the packet.
+    let (checksum, body) = buffer.split_at_mut(4);
+
+    // Create a CRC32 digest of the implicit protocol ID and the body of the packet.
+    let mut digest = Digest::new(crc32::IEEE);
+    digest.write_u64(PROTOCOL_ID);
+    Hasher32::write(&mut digest, body);
+
+    // Write the checksum into the leading 4 bytes of the packet.
+    NetworkEndian::write_u32(checksum, digest.sum32());
+
     Ok(())
 }
 
@@ -792,13 +816,13 @@ struct OpenConnection {
     _last_received_time: Instant,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Packet<'a> {
     connection_id: u64,
     data: PacketData<'a>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PacketData<'a> {
     ConnectionRequest,
     Challenge(&'a [u8]),
@@ -813,6 +837,109 @@ impl<'a> PacketData<'a> {
             PacketData::Challenge(..) => CHALLENGE,
             PacketData::ChallengeResponse(..) => CHALLENGE_RESPONSE,
             PacketData::ConnectionAccepted => CONNECTION_ACCEPTED,
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn connection_request_roundtrip() {
+        const CONNECTION_ID: u64 = 0x0011223344556677;
+
+        let mut buffer = Vec::with_capacity(MAX_PACKET_SIZE);
+        let packet = Packet {
+            connection_id: CONNECTION_ID,
+            data: PacketData::ConnectionRequest,
+        };
+
+        encode(
+            packet,
+            &mut buffer,
+        ).expect("Error encoding packet");
+
+        match decode(&buffer[..]).expect("Error decoding packet") {
+            Some(decoded) => {
+                assert_eq!(packet, decoded, "Decoded packed doesn't match original");
+            }
+
+            None => { panic!("Packet failed verification"); }
+        }
+    }
+
+    #[test]
+    fn challenge_roundtrip() {
+        const CONNECTION_ID: u64 = 0x0011223344556677;
+        static COOKIE: &'static [u8] = b"super good cookie that's totally valid";
+
+        let mut buffer = Vec::with_capacity(MAX_PACKET_SIZE);
+        let packet = Packet {
+            connection_id: CONNECTION_ID,
+            data: PacketData::Challenge(COOKIE),
+        };
+
+        encode(
+            packet,
+            &mut buffer,
+        ).expect("Error encoding packet");
+
+        match decode(&buffer[..]).expect("Error decoding packet") {
+            Some(decoded) => {
+                assert_eq!(packet, decoded, "Decoded packed doesn't match original");
+            }
+
+            None => { panic!("Packet failed verification"); }
+        }
+    }
+
+    #[test]
+    fn challenge_response_roundtrip() {
+        const CONNECTION_ID: u64 = 0x0011223344556677;
+        static COOKIE: &'static [u8] = b"super good cookie that's totally valid";
+
+        let mut buffer = Vec::with_capacity(MAX_PACKET_SIZE);
+        let packet = Packet {
+            connection_id: CONNECTION_ID,
+            data: PacketData::ChallengeResponse(COOKIE),
+        };
+
+        encode(
+            packet,
+            &mut buffer,
+        ).expect("Error encoding packet");
+
+        match decode(&buffer[..]).expect("Error decoding packet") {
+            Some(decoded) => {
+                assert_eq!(packet, decoded, "Decoded packed doesn't match original");
+            }
+
+            None => { panic!("Packet failed verification"); }
+        }
+    }
+
+    #[test]
+    fn connection_accepted_roundtrip() {
+        const CONNECTION_ID: u64 = 0x0011223344556677;
+
+        let mut buffer = Vec::with_capacity(MAX_PACKET_SIZE);
+        let packet = Packet {
+            connection_id: CONNECTION_ID,
+            data: PacketData::ConnectionAccepted,
+        };
+
+        encode(
+            packet,
+            &mut buffer,
+        ).expect("Error encoding packet");
+
+        match decode(&buffer[..]).expect("Error decoding packet") {
+            Some(decoded) => {
+                assert_eq!(packet, decoded, "Decoded packed doesn't match original");
+            }
+
+            None => { panic!("Packet failed verification"); }
         }
     }
 }
