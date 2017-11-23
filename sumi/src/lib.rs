@@ -1,26 +1,31 @@
 extern crate bincode;
 extern crate byteorder;
 extern crate crc;
+extern crate failure;
 extern crate futures;
 extern crate rand;
 extern crate ring;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
+extern crate subslice_index;
+#[macro_use]
 extern crate tokio_core;
 
 use byteorder::{ByteOrder, NetworkEndian, ReadBytesExt, WriteBytesExt};
 use crc::crc32::{self, Digest, Hasher32};
-use futures::{Async, Future, Poll, Stream};
+use futures::prelude::*;
 use rand::Rng;
 use rand::os::OsRng;
 use ring::aead::{self, Algorithm, CHACHA20_POLY1305, OpeningKey, SealingKey};
 use ring::digest::SHA512;
 use ring::pbkdf2;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::hash::Hasher;
-use std::io::{self, Cursor, Error, ErrorKind, Result};
+use std::io::{self, Cursor};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::str;
 use std::time::{Duration, Instant};
@@ -45,6 +50,9 @@ const NONCE_LEN: usize = 12;
 // size of a cookie.
 const MAX_CIPHERTEXT_LEN: usize = MAX_COOKIE_LEN - NONCE_LEN;
 
+// We cap the length of of a message to a value we can represent as a `u32`.
+const MAX_MESSAGE_LEN: usize = ::std::u32::MAX as usize;
+
 // The protocol ID is the first 64 bits of the MD5 hash of "sumi".
 const PROTOCOL_ID: u64 = 0x41008F06B7698109;
 
@@ -52,6 +60,7 @@ const CONNECTION_REQUEST: u8 = 1;
 const CHALLENGE: u8 = 2;
 const CHALLENGE_RESPONSE: u8 = 3;
 const CONNECTION_ACCEPTED: u8 = 4;
+const MESSAGE: u8 = 5;
 
 static ALGORITHM: &'static Algorithm = &CHACHA20_POLY1305;
 
@@ -89,9 +98,10 @@ static ALGORITHM: &'static Algorithm = &CHACHA20_POLY1305;
 /// [`Connection`]: ./struct.Connection.html
 pub struct ConnectionListener {
     socket: UdpSocket,
+    local_address: SocketAddr,
 
     // Map containing all the currently open connections.
-    open_connections: HashMap<SocketAddr, OpenConnection>,
+    open_connections: HashMap<u64, OpenConnection>,
 
     // RNG used for generating nonces for cookie encryption as part of the connection handshake.
     rng: OsRng,
@@ -108,6 +118,8 @@ pub struct ConnectionListener {
     // Buffers for reading incoming packets and writing outgoing packets.
     read_buffer: Vec<u8>,
     write_buffer: Vec<u8>,
+
+    handle: Handle,
 }
 
 impl ConnectionListener {
@@ -164,7 +176,10 @@ impl ConnectionListener {
     ///
     /// [`local_addr`]: #method.local_addr
     /// [`ToSocketAddrs`]: https://doc.rust-lang.org/std/net/trait.ToSocketAddrs.html
-    pub fn bind<A: ToSocketAddrs>(addresses: A, handle: &Handle) -> Result<ConnectionListener> {
+    pub fn bind<A: ToSocketAddrs>(
+        addresses: A,
+        handle: &Handle,
+    ) -> Result<ConnectionListener, io::Error> {
         // Iterate over the specified addresses, trying to bind the UDP socket to each one in
         // turn. We use the first one that binds successfully, returning an error if none work.
         let socket = addresses.to_socket_addrs()?
@@ -179,7 +194,8 @@ impl ConnectionListener {
                     }
                 }
             })
-            .unwrap_or(Err(ErrorKind::AddrNotAvailable.into()))?;
+            .unwrap_or(Err(io::ErrorKind::AddrNotAvailable.into()))?;
+        let local_address = socket.local_addr()?;
 
         // Create the AEAD keys used for encrypting information in a connection challenge.
         let mut rng = OsRng::new()?;
@@ -203,6 +219,8 @@ impl ConnectionListener {
 
         Ok(ConnectionListener {
             socket,
+            local_address,
+
             rng,
             opening_key,
             sealing_key,
@@ -210,6 +228,7 @@ impl ConnectionListener {
             open_connections: HashMap::new(),
             read_buffer: vec![0; MAX_PACKET_SIZE],
             write_buffer: Vec::with_capacity(MAX_PACKET_SIZE),
+            handle: handle.clone(),
         })
     }
 
@@ -233,34 +252,42 @@ impl ConnectionListener {
     /// );
     /// # }
     /// ```
-    pub fn local_addr(&self) -> Result<SocketAddr> {
+    pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
         self.socket.local_addr()
     }
 }
 
 impl Stream for ConnectionListener {
     type Item = Connection;
-    type Error = Error;
+    type Error = io::Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, self::Error> {
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         loop {
             // Read any available messages on the socket. Once we receive a `WouldBlock` error,
             // there is no more data to receive.
             let (bytes_read, address) = match self.socket.recv_from(&mut self.read_buffer) {
-                Ok(result) => result,
+                Ok(result) => { result }
 
                 Err(error) => {
-                    if error.kind() == ErrorKind::WouldBlock { break; }
-                    return Err(error);
+                    match error.kind() {
+                        io::ErrorKind::WouldBlock => { return Ok(Async::NotReady); }
+
+                        // On Windows, this is returned when a previous send operation resulted
+                        // in an ICMP Port Unreachable message. Unfortunately, we don't get
+                        // enough information on which connection has been broken, so we'll have
+                        // to ignore this and wait for the connection to timeout.
+                        io::ErrorKind::ConnectionReset => { continue; }
+
+                        // All other error kinds are legit errors, and are returned as such.
+                        _ => { return Err(error); }
+                    }
                 }
             };
 
             // Decode the packet, discarding any packets that fail basic verification.
             let Packet { connection_id, data } = match decode(&self.read_buffer[.. bytes_read])? {
                 Some(packet) => { packet }
-                None => {
-                    continue;
-                }
+                None => { continue; }
             };
 
             match data {
@@ -325,7 +352,7 @@ impl Stream for ConnectionListener {
                     match self.socket.send_to(&self.write_buffer[..], &address) {
                         Ok(..) => {}
                         Err(error) => {
-                            if error.kind() != ErrorKind::WouldBlock {
+                            if error.kind() != io::ErrorKind::WouldBlock {
                                 return Err(error);
                             }
 
@@ -392,34 +419,52 @@ impl Stream for ConnectionListener {
 
                     // The cookie has passed validation, which means we can accept the connection!
                     // Add it to the set of open connections.
-                    let (connection, is_new) = match self.open_connections.entry(address) {
-                        Entry::Occupied(entry) => { (entry.into_mut(), false) }
+
+
+                    let (connection, client) = match self.open_connections.entry(connection_id) {
+                        Entry::Occupied(entry) => { (entry.into_mut(), None) }
 
                         Entry::Vacant(entry) => {
-                            let connection = OpenConnection {
+                            // Bind a new UDP socket listening on a local port. We'll forward incoming
+                            // packets for this connection to the socket.
+                            let bind_address = ([127, 0, 0, 1], 0).into();
+                            let socket = UdpSocket::bind(&bind_address, &self.handle)?;
+                            let local_address = socket.local_addr()?;
+
+                            // Create a client that sends messages to the connection listener.
+                            let client = Connection {
+                                socket,
+                                peer_address: self.local_address,
                                 connection_id,
+                            };
+
+                            let connection = OpenConnection {
+                                local_address,
+                                remote_address: address,
+
                                 _last_received_time: Instant::now(),
                             };
-                            (entry.insert(connection), true)
+                            (entry.insert(connection), Some(client))
                         }
                     };
 
-                    // If we already have an open connection from the same address, ignore any
-                    // attempts to open another connection.
-                    if connection.connection_id != connection_id {
+                    // If the address the packet came from doesn't match the remote address in
+                    // the connection record, discard the packet.
+                    if address != connection.remote_address {
                         continue;
                     }
 
+                    // Encode the connection accepted message.
                     encode(
                         Packet { connection_id, data: PacketData::ConnectionAccepted },
                         &mut self.write_buffer,
                     )?;
 
-                    // Send that junk to junk town.
+                    // Send the connection accepted message.
                     match self.socket.send_to(&self.write_buffer[..], &address) {
                         Ok(..) => {}
                         Err(error) => {
-                            if error.kind() != ErrorKind::WouldBlock {
+                            if error.kind() != io::ErrorKind::WouldBlock {
                                 return Err(error);
                             }
 
@@ -429,54 +474,116 @@ impl Stream for ConnectionListener {
                     }
 
                     // Yield the new connection.
-                    if is_new {
-                        return Ok(Async::Ready(Some(Connection {
-                            peer_address: address,
-                        })));
+                    if let Some(client) = client {
+                        return Ok(Async::Ready(Some(client)));
                     }
                 }
 
-                // Ignore all other packet types.
-                _ => {
-                    continue;
+                // For all other packet types, we try to forward it to the correct socket; Either
+                // the local socket if it came from the client, or the client socket if it came
+                // from the local socket.
+                _ => if let Some(connection) = self.open_connections.get(&connection_id) {
+                    let to_address = if address == connection.local_address {
+                        // Forward to the remote address.
+                        connection.remote_address
+                    } else if address == connection.remote_address {
+                        // Forward to the local address.
+                        connection.local_address
+                    } else {
+                        // The packet came from an unknown address, simply discard it.
+                        continue;
+                    };
+
+                    // Send the packet to its real destination.
+                    match self.socket.send_to(&self.read_buffer[.. bytes_read], &to_address) {
+                        Ok(_) => {}
+
+                        Err(error) => {
+                            if error.kind() == io::ErrorKind::WouldBlock {
+                                panic!("Failed to send a critical message: {:?}", data);
+                            }
+
+                            return Err(error);
+                        }
+                    }
                 }
             }
         }
-
-        Ok(Async::NotReady)
     }
 }
 
-/// A server-side connection established by a [`ConnectionListener`].
+/// A connection between a local and remote socket.
 ///
+/// After creating a `Connection` by either [`connect`]ing to a remote host or yielding one
+/// from a [`ConnectionListener`], data can be transmitted by... well, by using [`serialized`]
+/// to converting it to a type that implements [`Stream`] and [`Sink`].
+///
+/// The connection will be closed when the value is dropped.
+///
+/// # Examples
+///
+/// ```no_run
+/// # extern crate sumi;
+/// # extern crate tokio_core;
+/// # fn main() {
+/// use sumi::Connection;
+/// use tokio_core::reactor::Core;
+///
+/// let mut core = Core::new().unwrap();
+/// let address = "127.0.0.1:1234".parse().unwrap();
+/// let wait_for_connection = Connection::connect(address, &core.handle()).unwrap();
+/// let connection = core.run(wait_for_connection).unwrap();
+/// # }
+/// ```
+///
+/// [`connect`]: #method.connect
 /// [`ConnectionListener`]: ./struct.ConnectionListener.html
+/// [`serialized`]: #method.serialized
+/// [`Stream`]: https://docs.rs/futures/0.1/futures/stream/trait.Stream.html
+/// [`Sink`]: https://docs.rs/futures/0.1/futures/sink/trait.Sink.html
+/// ```
 #[derive(Debug)]
 pub struct Connection {
-    peer_address: SocketAddr,
-}
-
-/// A client connected to a remove server.
-#[derive(Debug)]
-pub struct Client {
     socket: UdpSocket,
     peer_address: SocketAddr,
-
-    read_buffer: Vec<u8>,
-    write_buffer: Vec<u8>,
+    connection_id: u64,
 }
 
-impl Client {
+impl Connection {
+    /// Opens a new connection to a remote host at the specified address.
+    ///
+    /// The function will create a new socket and attempt to connect it to the `address` provided.
+    /// The returned future will be resolved once the stream has successfully connected. If an
+    /// error happens during the connection or during the socket creation, that error will be
+    /// returned to the future instead.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # extern crate sumi;
+    /// # extern crate tokio_core;
+    /// # fn main() {
+    /// use sumi::Connection;
+    /// use tokio_core::reactor::Core;
+    ///
+    /// let mut core = Core::new().unwrap();
+    /// let address = "127.0.0.1:1234".parse().unwrap();
+    /// let wait_for_connection = Connection::connect(address, &core.handle()).unwrap();
+    /// let connection = core.run(wait_for_connection).unwrap();
+    /// # }
     pub fn connect(
-        server_address: &SocketAddr,
+        address: SocketAddr,
         handle: &Handle,
-    ) -> Result<ClientNew> {
+    ) -> Result<ConnectionNew, io::Error> {
+        let address = address.into();
+
         // What's the right address to bind the local socket to?
         let bind_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0);
         let socket = UdpSocket::bind(&bind_address, handle)?;
 
-        Ok(ClientNew {
+        Ok(ConnectionNew {
             socket: Some(socket),
-            server_address: *server_address,
+            peer_address: address,
             start_time: Instant::now(),
             connection_id: rand::random(),
             state: ConnectionState::AwaitingChallenge,
@@ -486,19 +593,181 @@ impl Client {
             write_buffer: Vec::with_capacity(MAX_PACKET_SIZE),
         })
     }
+
+    /// Provides a Stream and Sink interface for sending and receiving messages.
+    ///
+    /// The raw `Connection` only supports sending and receiving messages as byte arrays. In order
+    /// to simplify higher-level code, this adapter provides automatic serialization and
+    /// deserialization of messages, making communication easier.
+    ///
+    /// Serialization is done using [bincode], which provides a reasonable default serialization
+    /// strategy for most purposes. For more specialized serialization strategies, just... I
+    /// dunno... do it yourself.
+    ///
+    /// This function returns a *single* object that is both [`Stream`] and [`Sink`]; grouping
+    /// this into a single object is often useful for layering things which require both read
+    /// and write access to the underlying object.
+    ///
+    /// If you want to work more directly with the stream and sink, consider calling [`split`]
+    /// on the [`Serialized`] returned by this method, which will break them into separate
+    /// objects, allowing them to interact more easily.
+    ///
+    /// [bincode]: https://crates.io/crates/bincode
+    /// [`Stream`]: https://docs.rs/futures/0.1/futures/stream/trait.Stream.html
+    /// [`Sink`]: https://docs.rs/futures/0.1/futures/sink/trait.Sink.html
+    /// [`split`]: https://docs.rs/futures/0.1/futures/stream/trait.Stream.html#method.split
+    /// [`Serialized`]: ./struct.Serialized.html
+    pub fn serialized<T, U>(self) -> Serialized<T, U> {
+        Serialized {
+            socket: self.socket,
+            peer_address: self.peer_address,
+            connection_id: self.connection_id,
+
+            read_buffer: vec![0; MAX_PACKET_SIZE],
+            write_buffer: Vec::with_capacity(MAX_PACKET_SIZE),
+
+            flushed: true,
+
+            _send: Default::default(),
+            _recv: Default::default(),
+        }
+    }
 }
 
-/// Future returned by [`Client::connect`] which will resolve to a [`Client`] when the connection
-/// is established.
+/// A wrapper around a [`Connection`] that automatically handles serialization.
 ///
-/// [`Client::connect`]: ./struct.Client.html#method.connect
-/// [`Client`]: ./struct.Client.html
-pub struct ClientNew {
-    // We wrap the socket in an `Option` so that we can move the socket out of the `ClientNew`
+/// This is created by the [`serialized`] method on [`Connection`]. See its documentation for
+/// more information.
+///
+/// [`Connection`]: ./struct.Connection.html
+/// [`serialized`]: ./struct.Connection.html#method.serialized
+#[derive(Debug)]
+pub struct Serialized<T, U> {
+    socket: UdpSocket,
+    peer_address: SocketAddr,
+    connection_id: u64,
+
+    read_buffer: Vec<u8>,
+    write_buffer: Vec<u8>,
+    flushed: bool,
+
+    _send: ::std::marker::PhantomData<T>,
+    _recv: ::std::marker::PhantomData<U>,
+}
+
+impl<T, U> Serialized<T, U> {
+    /// Consumes the `Serialized` returning the underlying [`Connection`].
+    ///
+    /// [`Connection`]: ./struct.Connection.html
+    pub fn into_inner(self) -> Connection {
+        let Serialized { socket, peer_address, connection_id, .. } = self;
+        Connection { socket, peer_address, connection_id }
+    }
+}
+
+impl<T, U: DeserializeOwned> Stream for Serialized<T, U> {
+    type Item = U;
+    type Error = io::Error;
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        loop {
+            // If there is no more data ready on the socket, return a `WouldBlock` error.
+
+            // Read the bytes off the socket.
+            let (bytes_read, address) = try_nb!(self.socket.recv_from(&mut self.read_buffer));
+
+            // Ignore nay packets that don't come from the server.
+            if address != self.peer_address { continue; }
+
+            // Decode the packet, discarding it if it fails validation.
+            let packet = match decode(&self.read_buffer[.. bytes_read])? {
+                Some(packet) => { packet }
+                None => { continue; }
+            };
+
+            // Handle the packet according to its type, returning the message's data if we
+            // received a message packet.
+            let message_bytes = match packet.data {
+                PacketData::Message(message_bytes) => { message_bytes }
+
+                // Discard any stray messages that are part of the handshake.
+                PacketData::ConnectionRequest
+                | PacketData::Challenge(_)
+                | PacketData::ChallengeResponse(_)
+                | PacketData::ConnectionAccepted => { continue; }
+            };
+
+            if let Ok(message) = bincode::deserialize(message_bytes) {
+                return Ok(Async::Ready(Some(message)));
+            }
+        }
+    }
+}
+
+impl<T: Serialize, U> Sink for Serialized<T, U> {
+    type SinkItem = T;
+    type SinkError = io::Error;
+
+    fn start_send(
+        &mut self,
+        item: Self::SinkItem,
+    ) -> StartSend<Self::SinkItem, Self::SinkError> {
+        if !self.flushed {
+            match self.poll_complete()? {
+                Async::Ready(()) => {},
+                Async::NotReady => return Ok(AsyncSink::NotReady(item)),
+            }
+        }
+
+        // TODO: Don't allocate each time we serialize a message.
+        let serialized = bincode::serialize(&item, bincode::Bounded(1024))
+            .expect("Serialized size was too big, need to implement message fragmenting");
+
+        encode(
+            Packet {
+                connection_id: self.connection_id,
+                data: PacketData::Message(&serialized),
+            },
+            &mut self.write_buffer,
+        )?;
+        self.flushed = false;
+
+        Ok(AsyncSink::Ready)
+    }
+
+    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
+        if self.flushed {
+            return Ok(Async::Ready(()))
+        }
+
+        let n = try_nb!(self.socket.send_to(&self.write_buffer, &self.peer_address));
+
+        let wrote_all = n == self.write_buffer.len();
+        self.write_buffer.clear();
+        self.flushed = true;
+
+        if wrote_all {
+            Ok(Async::Ready(()))
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "failed to write entire datagram to socket",
+            ))
+        }
+    }
+}
+
+/// Future returned by [`Connection::connect`] which will resolve to a [`Connection`] when the
+/// connection is established.
+///
+/// [`Connection::connect`]: ./struct.Connection.html#method.connect
+/// [`Connection`]: ./struct.Connection.html
+pub struct ConnectionNew {
+    // We wrap the socket in an `Option` so that we can move the socket out of the `ConnectionNew`
     // future once the connection is accepted.
     socket: Option<UdpSocket>,
 
-    server_address: SocketAddr,
+    peer_address: SocketAddr,
     start_time: Instant,
     connection_id: u64,
     state: ConnectionState,
@@ -508,14 +777,14 @@ pub struct ClientNew {
     write_buffer: Vec<u8>,
 }
 
-impl Future for ClientNew {
-    type Item = Client;
-    type Error = Error;
+impl Future for ConnectionNew {
+    type Item = Connection;
+    type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         // If we've taken too long, return a timeout error.
         if self.start_time.elapsed() > Duration::from_secs(1) {
-            return Err(ErrorKind::TimedOut.into());
+            return Err(io::ErrorKind::TimedOut.into());
         }
 
         // Read any ready messages on the socket.
@@ -524,20 +793,16 @@ impl Future for ClientNew {
                 let socket = self.socket
                     .as_ref()
                     .expect("Poll called after connection was established");
-                match socket.recv_from(&mut self.read_buffer) {
-                    Ok(info) => info,
 
-                    Err(error) => {
-                        if error.kind() == ErrorKind::WouldBlock {
-                            break;
-                        }
-                        return Err(error);
-                    }
+                if let Async::NotReady = socket.poll_read() {
+                    break;
                 }
+
+                try_nb!(socket.recv_from(&mut self.read_buffer))
             };
 
             // Discard the packet if it didn't come from the server we're connecting to.
-            if address != self.server_address { continue; }
+            if address != self.peer_address { continue; }
 
             // Decode that sweet, sweet packet.
             let Packet { connection_id, data } = match decode(&self.read_buffer[.. bytes_read])? {
@@ -587,7 +852,7 @@ impl Future for ClientNew {
                         .expect("Poll called after connection was established")
                         .send_to(
                             &self.write_buffer[..],
-                            &self.server_address,
+                            &self.peer_address,
                         );
                     match send_result {
                         Ok(..) => {}
@@ -595,7 +860,7 @@ impl Future for ClientNew {
                         // NOTE: We don't do anything when we get a `WouldBlock` error because we'll retry to
                         // send the message at a regular interval.
                         Err(error) => {
-                            if error.kind() != ErrorKind::WouldBlock {
+                            if error.kind() != io::ErrorKind::WouldBlock {
                                 return Err(error);
                             }
                             println!(
@@ -610,12 +875,10 @@ impl Future for ClientNew {
                     let socket = self.socket
                         .take()
                         .expect("Poll called after connection was established");
-                    return Ok(Async::Ready(Client {
+                    return Ok(Async::Ready(Connection {
                         socket,
-                        peer_address: self.server_address,
-
-                        read_buffer: vec![0; MAX_PACKET_SIZE],
-                        write_buffer: Vec::with_capacity(MAX_PACKET_SIZE),
+                        peer_address: self.peer_address,
+                        connection_id: self.connection_id,
                     }));
                 }
 
@@ -656,7 +919,7 @@ impl Future for ClientNew {
                 .expect("Poll called after connection was established")
                 .send_to(
                     &self.write_buffer[..],
-                    &self.server_address,
+                    &self.peer_address,
                 );
             match send_result {
                 Ok(..) => {}
@@ -664,7 +927,7 @@ impl Future for ClientNew {
                 // NOTE: We don't do anything when we get a `WouldBlock` error because we'll retry to
                 // send the message at a regular interval.
                 Err(error) => {
-                    if error.kind() != ErrorKind::WouldBlock {
+                    if error.kind() != io::ErrorKind::WouldBlock {
                         return Err(error);
                     }
                     println!(
@@ -679,7 +942,7 @@ impl Future for ClientNew {
     }
 }
 
-fn decode<'a>(buffer: &'a [u8]) -> Result<Option<Packet<'a>>> {
+fn decode<'a>(buffer: &'a [u8]) -> Result<Option<Packet<'a>>, io::Error> {
     // Ignore any messages that are too small to at least contain the header, connection
     // ID, and message type.
     if buffer.len() < 4 + 8 + 1 { return Ok(None); }
@@ -741,6 +1004,16 @@ fn decode<'a>(buffer: &'a [u8]) -> Result<Option<Packet<'a>>> {
 
         CONNECTION_ACCEPTED => { PacketData::ConnectionAccepted }
 
+        MESSAGE => {
+            let message_len = cursor.read_u32::<NetworkEndian>()? as usize;
+            let message_start = cursor.position() as usize;
+            let message_end = message_start + message_len;
+
+            if message_end > body.len() { return Ok(None); }
+
+            PacketData::Message(&body[message_start .. message_end])
+        }
+
         // Ignore any unknown message types.
         _ => { return Ok(None); }
     };
@@ -748,7 +1021,7 @@ fn decode<'a>(buffer: &'a [u8]) -> Result<Option<Packet<'a>>> {
     Ok(Some(Packet { connection_id, data }))
 }
 
-fn encode<'a>(packet: Packet<'a>, buffer: &mut Vec<u8>) -> Result<()> {
+fn encode<'a>(packet: Packet<'a>, buffer: &mut Vec<u8>) -> Result<(), io::Error> {
     // Reset the output buffer before writing the packet.
     buffer.clear();
 
@@ -773,7 +1046,7 @@ fn encode<'a>(packet: Packet<'a>, buffer: &mut Vec<u8>) -> Result<()> {
             // Write the length of the cookie into the buffer.
             debug_assert!(
                 cookie.len() <= MAX_COOKIE_LEN,
-                "Cookie is too big for its length to fit in a u8"
+                "Cookie is too big for its length to fit in a `u8`"
             );
             buffer.write_u8(cookie.len() as u8)?;
 
@@ -782,6 +1055,18 @@ fn encode<'a>(packet: Packet<'a>, buffer: &mut Vec<u8>) -> Result<()> {
         }
 
         PacketData::ConnectionAccepted => {}
+
+        PacketData::Message(message) => {
+            // Write the length of the message into the buffer.
+            debug_assert!(
+                message.len() <= MAX_MESSAGE_LEN,
+                "Message is too big for its length to fit in a `u32`"
+            );
+            buffer.write_u32::<NetworkEndian>(message.len() as u32)?;
+
+            // Write the message into the buffer.
+            buffer.extend(message);
+        }
     }
 
     // Split the buffer into the leading checksum and the remaining body of the packet.
@@ -811,8 +1096,11 @@ struct ChallengeCookie {
     connection_id: u64,
 }
 
+#[derive(Debug, Clone)]
 struct OpenConnection {
-    connection_id: u64,
+    local_address: SocketAddr,
+    remote_address: SocketAddr,
+
     _last_received_time: Instant,
 }
 
@@ -828,6 +1116,7 @@ enum PacketData<'a> {
     Challenge(&'a [u8]),
     ChallengeResponse(&'a [u8]),
     ConnectionAccepted,
+    Message(&'a [u8]),
 }
 
 impl<'a> PacketData<'a> {
@@ -837,6 +1126,7 @@ impl<'a> PacketData<'a> {
             PacketData::Challenge(..) => CHALLENGE,
             PacketData::ChallengeResponse(..) => CHALLENGE_RESPONSE,
             PacketData::ConnectionAccepted => CONNECTION_ACCEPTED,
+            PacketData::Message(..) => MESSAGE,
         }
     }
 }

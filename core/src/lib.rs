@@ -41,7 +41,6 @@ pub struct InputState {
     pub right: bool,
 }
 
-
 /// Provides an iterator yielding the currently ready items from a `Stream`.
 pub struct PollReady<'a, S: 'a> {
     stream: &'a mut Spawn<S>,
@@ -57,8 +56,7 @@ impl<'a, S: 'a + Stream> PollReady<'a, S> {
     }
 }
 
-impl<'a, S: 'a> Iterator for PollReady<'a, S>  where S: Stream
-{
+impl<'a, S: 'a> Iterator for PollReady<'a, S> where S: Stream {
     type Item = Result<S::Item, S::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
