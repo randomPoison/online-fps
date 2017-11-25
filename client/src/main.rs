@@ -11,7 +11,8 @@ use gl_winit::CreateContext;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use futures::prelude::*;
-use futures::unsync::oneshot;
+use futures::sync::mpsc;
+use futures::sync::oneshot;
 use futures::executor;
 use polygon::{Renderer};
 use polygon::anchor::{Anchor, AnchorId};
@@ -20,7 +21,9 @@ use polygon::geometry::mesh::MeshBuilder;
 use polygon::gl::GlRender;
 use polygon::math::{Color, Orientation, Point, Vector3};
 use polygon::mesh_instance::MeshInstance;
-use sumi::{Connection, Serialized};
+use std::io;
+use std::thread;
+use sumi::Connection;
 use tokio_core::reactor::Core;
 use winit::*;
 
@@ -49,34 +52,50 @@ fn main() {
     let mut renderer = GlRender::new(context).expect("Failed to create GL renderer");
 
     // Create the event loop that will drive network communication.
-    let mut core = Core::new().unwrap();
-    let handle = core.handle();
+    let (sender, receiver) = oneshot::channel();
+    thread::spawn(move || {
+        // Create the event loop that will drive network communication.
+        let mut core = Core::new().unwrap();
+
+        // Send a remote handle to the reactor back to the main thread.
+        let remote = core.remote();
+
+        // Spawn the connection listener onto the reactor and create a new `Stream` that yields each
+        // connection as it is received.
+        let address = "127.0.0.1:1234".parse().unwrap();
+        let wait_for_connection = Connection::connect(address, &core.handle())
+            .expect("Failed to bind socket");
+        let wait_for_connection = oneshot::spawn(wait_for_connection, &core);
+
+        sender.send((wait_for_connection, remote)).expect("Failed to send the remote handle");
+
+        // Run the main loop forever.
+        loop {
+            core.turn(None);
+        }
+    });
+    let (wait_for_connection, remote) = receiver.wait().expect("Failed to receive the remote");
 
     // Bind to the address we want to listen on.
-    let wait_for_connection = Connection::connect(
-            "127.0.0.1:1234".parse().unwrap(),
-            &handle,
-        )
-        .expect("Failed to bind socket")
-        .and_then(|connection| {
-            println!("Connected to the server");
-            connection.serialized::<ClientMessage, ServerMessage>()
-                .into_future()
-                .and_then(|(message, connection)| {
-                    let message = message.expect("Disconnected from server");
-                    let player = match message.body {
-                        ServerMessageBody::PlayerUpdate(player) => player,
-                    };
+    let wait_for_connection = wait_for_connection.and_then(|connection| {
+        println!("Connected to the server");
+        connection.serialized::<ClientMessage, ServerMessage>()
+            .into_future()
+            .and_then(|(message, connection)| {
+                let message = message.expect("Disconnected from server");
+                let player = match message.body {
+                    ServerMessageBody::PlayerUpdate(player) => player,
+                };
 
-                    Ok((connection, player, message.server_frame))
-                })
-                .map_err(|(error, _connection)| {
-                    panic!("Error getting init info: {:?}", error.kind());
-                })
-        });
+                Ok((connection, player, message.server_frame))
+            })
+            .map_err(|(error, _connection)| {
+                panic!("Error getting init info: {:?}", error.kind());
+            })
+    });
 
     let notify = DummyNotify::new();
-    let mut wait_for_connection = executor::spawn(oneshot::spawn(wait_for_connection, &core));
+    let mut wait_for_connection = oneshot::spawn(wait_for_connection, &remote);
 
     // Game state variables.
     let mut game_state: Option<GameState> = None;
@@ -123,9 +142,6 @@ fn main() {
         // Don't run the rest of the frame if the window has closed.
         if !window_open { break; }
 
-        // Turn the reactor.
-        core.turn(Some(Duration::from_secs(0)));
-
         match game_state.take() {
             Some(mut state) => {
                 // Push the current input state into the frame history.
@@ -136,12 +152,12 @@ fn main() {
                     frame: frame_count,
                     body: ClientMessageBody::Input(input_state.clone()),
                 };
-                state.connection.start_send(message).expect("Failed to start send");
+                state.sender.start_send(message).expect("Failed to start send");
 
                 let mut received_message = false;
 
                 // Process any messages that we have received from the platform.
-                for message_result in PollReady::new(&mut executor::spawn(&mut state.connection), &notify) {
+                for message_result in PollReady::new(&mut executor::spawn(&mut state.receiver), &notify) {
                     let message = message_result.expect("Some kind of error with message");
 
                     assert!(
@@ -208,7 +224,7 @@ fn main() {
             }
 
             None => {
-                let async = wait_for_connection
+                let async = executor::spawn(&mut wait_for_connection)
                     .poll_future_notify(&notify, 0)
                     .expect("I/O thread cancelled sending connection");
                 if let Async::Ready((connection, player, latest_server_frame)) = async {
@@ -251,8 +267,26 @@ fn main() {
                     // Set ambient color to pure white so we don't need to worry about lighting.
                     renderer.set_ambient_light(Color::rgb(1.0, 1.0, 1.0));
 
+                    let (sink, stream) = connection.split();
+
+                    let receiver = mpsc::spawn(stream, &remote, 8);
+                    let sender = {
+                        let (sender, receiver) = mpsc::channel(8);
+                        let sink = sink
+                            .sink_map_err(|error| {
+                                panic!("Sink error: {:?}", error);
+                            })
+                            .send_all(receiver)
+                            .map(|_| {});
+                        remote.spawn(|_| sink);
+
+                        sender
+                    };
+
                     game_state = Some(GameState {
-                        connection,
+                        sender,
+                        receiver,
+
                         player_anchor,
 
                         input_history: VecDeque::new(),
@@ -276,14 +310,17 @@ fn main() {
 
         // Now wait until we've returned to the frame cadence before beginning the next frame.
         while Instant::now() < frame_start {
-            core.turn(Some(Duration::from_millis(0)));
+            // TODO: Can we sleep with more accuracy?
+            thread::sleep(Duration::from_millis(1));
         }
     }
 }
 
 #[derive(Debug)]
 struct GameState {
-    connection: Serialized<ClientMessage, ServerMessage>,
+    sender: mpsc::Sender<ClientMessage>,
+    receiver: mpsc::SpawnHandle<ServerMessage, io::Error>,
+
     player_anchor: AnchorId,
 
     // Local state.

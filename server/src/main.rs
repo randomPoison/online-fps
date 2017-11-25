@@ -5,10 +5,11 @@ extern crate polygon_math as math;
 extern crate sumi;
 extern crate tokio_core;
 
-use core::{ClientMessage, DummyNotify, InputState, Player, ServerMessage, ServerMessageBody};
+use core::{ClientMessage, ClientMessageBody, DummyNotify, InputState, Player, ServerMessage, ServerMessageBody};
 use futures::{Async, Future, Sink, Stream};
-use futures::executor::{self, Spawn};
-use futures::unsync::mpsc;
+use futures::executor;
+use futures::sync::mpsc;
+use futures::sync::oneshot;
 use math::{Point, Orientation};
 use std::io;
 use std::thread;
@@ -17,17 +18,28 @@ use sumi::ConnectionListener;
 use tokio_core::reactor::Core;
 
 fn main() {
-    // Create the event loop that will drive network communication.
-    let mut core = Core::new().unwrap();
-    let handle = core.handle();
+    let (sender, receiver) = oneshot::channel();
+    thread::spawn(|| {
+        // Create the event loop that will drive network communication.
+        let mut core = Core::new().unwrap();
 
-    // Bind to the address we want to listen on.
-    let connection_listener = ConnectionListener::bind("127.0.0.1:1234", &handle)
-        .expect("Failed to bind socket")
-        .map(|connection| connection.serialized::<ServerMessage, ClientMessage>());
+        // Send a remote handle to the reactor back to the main thread.
+        let remote = core.remote();
 
-    // Run an empty future so that the reactor will run the send end receieve futures forever.
-    let mut new_connections = executor::spawn(mpsc::spawn(connection_listener, &core, 16));
+        // Spawn the connection listener onto the reactor and create a new `Stream` that yields each
+        // connection as it is received.
+        let connection_listener = ConnectionListener::bind("127.0.0.1:1234", &core.handle())
+            .expect("Failed to bind socket")
+            .map(|connection| connection.serialized::<ServerMessage, ClientMessage>());
+        let new_connections = mpsc::spawn_unbounded(connection_listener, &core);
+        sender.send((new_connections, remote)).expect("Failed to send");
+
+        // Run the main loop forever.
+        loop {
+            core.turn(None);
+        }
+    });
+    let (mut new_connections, remote) = receiver.wait().expect("Faile to receive");
 
     let notify = DummyNotify::new();
 
@@ -37,27 +49,23 @@ fn main() {
     // Run the main loop of the game.
     let start_time = Instant::now();
     let target_frame_time = Duration::from_secs(1) / 60;
-    let _delta = 1.0 / 60.0;
-    let mut _frame_count = 0;
+    let delta = 1.0 / 60.0;
+    let mut frame_count = 0;
     let mut frame_start = start_time;
     loop {
-        _frame_count += 1;
-
-        core.turn(Some(Duration::from_millis(0)));
+        frame_count += 1;
 
         // TODO: Process any new connections.
         loop {
-            let async = new_connections
+            let async = executor::spawn(&mut new_connections)
                 .poll_stream_notify(&notify, 0)
                 .expect("Connection listener broke");
 
             match async {
                 Async::Ready(Some(connection)) => {
-                    println!("Got a new connection");
-
                     let (sink, stream) = connection.split();
 
-                    let stream = executor::spawn(mpsc::spawn(stream, &core, 8));
+                    let stream = mpsc::spawn(stream, &remote, 8);
                     let sink = {
                         let (sender, receiver) = mpsc::channel(8);
                         let sink = sink
@@ -66,9 +74,9 @@ fn main() {
                             })
                             .send_all(receiver)
                             .map(|_| {});
-                        handle.spawn(sink);
+                        remote.spawn(|_| sink);
 
-                        executor::spawn(sender)
+                        sender
                     };
 
                     let player = Player {
@@ -93,16 +101,46 @@ fn main() {
             }
         }
 
-        // TODO: Process each connected client.
         // For each connected client, process any incoming messages from the client, step the
         // player based on the current input state, and then send the player's current state back
         // to the client.
         for client in &mut clients {
+            // Poll the client's stream of incoming messages and handle each one we receive.
+            loop {
+                let async = executor::spawn(&mut client.stream)
+                    .poll_stream_notify(&notify, 0)
+                    .expect("Client disconnected?");
+                match async {
+                    Async::Ready(Some(message)) => {
+                        // If we receive the message out of order, straight up ignore it.
+                        // TODO: Handle out of order messages within the protocol.
+                        if message.frame < client.latest_frame { continue; }
+
+                        // Update our local info on the latest client frame we've received.
+                        client.latest_frame = message.frame;
+
+                        // Handle the actual contents of the message.
+                        match message.body {
+                            ClientMessageBody::Input(input) => { client.input = input; }
+                        }
+                    }
+
+                    Async::Ready(None) => {
+                        unimplemented!("Client disconnected!");
+                    }
+
+                    Async::NotReady => { break; }
+                }
+            }
+
+            // Tick the player.
+            client.player.step(&client.input, delta);
+
             // Send the player's current state to the client.
-            client.sink.start_send_notify(
+            executor::spawn(&mut client.sink).start_send_notify(
                 ServerMessage {
-                    server_frame: _frame_count,
-                    client_frame: 0,
+                    server_frame: frame_count,
+                    client_frame: client.latest_frame,
                     body: ServerMessageBody::PlayerUpdate(client.player.clone()),
                 },
                 &notify,
@@ -110,7 +148,7 @@ fn main() {
             ).expect("Failed to start send");
 
             // TODO: How do we poll if the send completed?
-            client.sink.poll_flush_notify(&notify, 0).expect("Error polling sink");
+            executor::spawn(&mut client.sink).poll_flush_notify(&notify, 0).expect("Error polling sink");
         }
 
         // Determine the next frame's start time, dropping frames if we missed the frame time.
@@ -120,8 +158,8 @@ fn main() {
 
         // Now wait until we've returned to the frame cadence before beginning the next frame.
         while Instant::now() < frame_start {
-            core.turn(Some(Duration::from_millis(0)));
-            thread::sleep(Duration::new(0, 1_000_000));
+            // TODO: Can we sleep the thread more efficiently?
+            thread::sleep(Duration::from_millis(1));
         }
     }
 }
@@ -129,8 +167,8 @@ fn main() {
 /// Represents a connected client and its associated state.
 #[derive(Debug)]
 struct Client {
-    stream: Spawn<mpsc::SpawnHandle<ClientMessage, io::Error>>,
-    sink: Spawn<mpsc::Sender<ServerMessage>>,
+    stream: mpsc::SpawnHandle<ClientMessage, io::Error>,
+    sink: mpsc::Sender<ServerMessage>,
 
     player: Player,
     input: InputState,

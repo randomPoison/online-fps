@@ -120,6 +120,5 @@ pub struct ClientMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessageBody {
-    Connect,
     Input(InputState),
 }
