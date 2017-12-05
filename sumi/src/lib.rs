@@ -22,26 +22,32 @@ use ring::digest::SHA512;
 use ring::pbkdf2;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use std::cmp;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::hash::Hasher;
 use std::io::{self, Cursor};
+use std::mem;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::str;
 use std::time::{Duration, Instant};
 use tokio_core::net::UdpSocket;
 use tokio_core::reactor::{Handle, Interval};
 
+// The base password used to generate the encryption keys for the connection listener.
+//
+// This value ultimately doesn't matter much, since we're we apply a random salt to it each time
+// we generate keys.
 static SECRET_PASSWORD_DO_NOT_STEAL: &'static [u8] = b"I'm a cool kid how about you?";
 
 // TODO: Attempt to dynamically discover MTU so that we can send larger packets when possible.
 // For now, we enforce a maximum packet size to reduce the likelyhood of going over the MTU,
 // which would result in packet loss.
-const MAX_PACKET_SIZE: usize = 1024;
+const MAX_PACKET_LEN: usize = 1024;
 
 // We want to be able to send the length of the cookie in a packet as a `u8`, so we enforce
 // that a cookie be no longer than what a `u8` can represent.
-const MAX_COOKIE_LEN: usize = ::std::u8::MAX as usize;
+const MAX_COOKIE_LEN: usize = 256;
 
 // TODO: Figure out an appropriate length for the nonce.
 const NONCE_LEN: usize = 12;
@@ -50,8 +56,27 @@ const NONCE_LEN: usize = 12;
 // size of a cookie.
 const MAX_CIPHERTEXT_LEN: usize = MAX_COOKIE_LEN - NONCE_LEN;
 
-// We cap the length of of a message to a value we can represent as a `u32`.
-const MAX_MESSAGE_LEN: usize = ::std::u32::MAX as usize;
+// The size of the packet header in bytes.
+//
+// The packet heaer is the 4 byte CRC32 checksum (that includes the implicit protocol ID), the
+// 8 byte connection ID, and the 1 byte identifying the packet type.
+const HEADER_LEN: usize = 4 + 8 + 1;
+
+// The maximum number of bytes from a message that can be sent in a single packet.
+//
+// This amount is determined by the maximum size of a single packet, minus the size of the packet
+// header, minus the 4 byte sequence number, minus 1 byte specifying the number of packets for
+// this message, minus 1 byte for the packet's chunk sequence number, minus 2 bytes for the
+// length of the fragment in bytes.
+const MAX_FRAGMENT_LEN: usize = MAX_PACKET_LEN - HEADER_LEN - 4 - 1 - 1 - 2;
+
+const MAX_FRAGMENTS_PER_MESSAGE: usize = 256;
+
+// The largest message we allow to be sent.
+//
+// We cap fragmented messages to 256 fragments, so the largest message we can send is the largest
+// size a single fragment can be times 256.
+const MAX_MESSAGE_LEN: usize = MAX_FRAGMENT_LEN * MAX_FRAGMENTS_PER_MESSAGE;
 
 // The protocol ID is the first 64 bits of the MD5 hash of "sumi".
 const PROTOCOL_ID: u64 = 0x41008F06B7698109;
@@ -226,8 +251,8 @@ impl ConnectionListener {
             sealing_key,
             start_time: Instant::now(),
             open_connections: HashMap::new(),
-            read_buffer: vec![0; MAX_PACKET_SIZE],
-            write_buffer: Vec::with_capacity(MAX_PACKET_SIZE),
+            read_buffer: vec![0; MAX_PACKET_LEN],
+            write_buffer: Vec::with_capacity(MAX_PACKET_LEN),
             handle: handle.clone(),
         })
     }
@@ -279,13 +304,15 @@ impl Stream for ConnectionListener {
                         io::ErrorKind::ConnectionReset => { continue; }
 
                         // All other error kinds are legit errors, and are returned as such.
-                        _ => { return Err(error); }
+                        _ => {
+                            return Err(error);
+                        }
                     }
                 }
             };
 
             // Decode the packet, discarding any packets that fail basic verification.
-            let Packet { connection_id, data } = match decode(&self.read_buffer[.. bytes_read])? {
+            let Packet { connection_id, data, .. } = match decode(&self.read_buffer[.. bytes_read])? {
                 Some(packet) => { packet }
                 None => { continue; }
             };
@@ -344,7 +371,10 @@ impl Stream for ConnectionListener {
                     // Write the challenge packet into a buffer.
                     let cookie = &cookie_bytes[.. cookie_len];
                     encode(
-                        Packet { connection_id, data: PacketData::Challenge(cookie) },
+                        Packet {
+                            connection_id,
+                            data: PacketData::Challenge(cookie),
+                        },
                         &mut self.write_buffer,
                     )?;
 
@@ -436,6 +466,11 @@ impl Stream for ConnectionListener {
                                 socket,
                                 peer_address: self.local_address,
                                 connection_id,
+                                sequence_number: 0,
+
+                                send_buffer: Vec::with_capacity(MAX_PACKET_LEN),
+                                recv_buffer: vec![0; 1024],
+                                fragments: HashMap::new(),
                             };
 
                             let connection = OpenConnection {
@@ -547,6 +582,14 @@ pub struct Connection {
     socket: UdpSocket,
     peer_address: SocketAddr,
     connection_id: u64,
+    sequence_number: u32,
+
+    // Intermediate buffers used in sending and receiving messages. Unlike a raw UDP socket, we
+    // need to use intermediate buffers because we have extra packet structure to handle in
+    // addition to the raw bytes of the message.
+    send_buffer: Vec<u8>,
+    recv_buffer: Vec<u8>,
+    fragments: HashMap<u32, MessageFragments>,
 }
 
 impl Connection {
@@ -589,9 +632,68 @@ impl Connection {
             state: ConnectionState::AwaitingChallenge,
             interval: Interval::new(Duration::from_millis(40), handle)?,
 
-            read_buffer: vec![0; MAX_PACKET_SIZE],
-            write_buffer: Vec::with_capacity(MAX_PACKET_SIZE),
+            read_buffer: vec![0; MAX_PACKET_LEN],
+            write_buffer: Vec::with_capacity(MAX_PACKET_LEN),
         })
+    }
+
+    /// Begins sending a message, returning a futures that resolves when the messages
+    /// has been fully sent.
+    pub fn send<T>(mut self, buffer: T) -> Send<T> where T: AsRef<[u8]> {
+        let num_fragments = {
+            let buffer = buffer.as_ref();
+
+            assert!(
+                buffer.len() <= MAX_MESSAGE_LEN,
+                "Message is longer than max len of {} bytes, message len: {}",
+                MAX_MESSAGE_LEN,
+                buffer.len()
+            );
+
+            // Increment the sequence number.
+            self.sequence_number.wrapping_add(1);
+
+            // Write the first fragment of the message into the connection's write buffer.
+            let num_fragments = (buffer.len() as f32 / MAX_FRAGMENT_LEN as f32).ceil() as u8;
+            let fragment_len = cmp::min(buffer.len(), MAX_FRAGMENT_LEN);
+            encode(
+                Packet {
+                    connection_id: self.connection_id,
+                    data: PacketData::Message {
+                        sequence_number: self.sequence_number,
+                        fragment: &buffer[.. fragment_len],
+                        num_fragments,
+                        fragment_number: 0,
+                    },
+                },
+                &mut self.send_buffer,
+            ).expect("Error encoding packet");
+
+            num_fragments
+        };
+
+        let sequence_number = self.sequence_number;
+        Send {
+            state: SendState::Writing {
+                connection: self,
+                buffer,
+                sequence_number,
+                num_fragments,
+                fragment_number: 1,
+            }
+        }
+    }
+
+    /// Creates a future that receives a message to be written to the buffer provided.
+    ///
+    /// The returned future will resolve after a message has been received in full.
+    pub fn recv<T>(self, buffer: T) -> Receive<T> where T: AsMut<[u8]> {
+        Receive {
+            state: ReceiveState::Reading {
+                connection: self,
+                buffer
+            },
+        }
     }
 
     /// Provides a Stream and Sink interface for sending and receiving messages.
@@ -619,12 +721,7 @@ impl Connection {
     /// [`Serialized`]: ./struct.Serialized.html
     pub fn serialized<T, U>(self) -> Serialized<T, U> {
         Serialized {
-            socket: self.socket,
-            peer_address: self.peer_address,
-            connection_id: self.connection_id,
-
-            read_buffer: vec![0; MAX_PACKET_SIZE],
-            write_buffer: Vec::with_capacity(MAX_PACKET_SIZE),
+            connection: self,
 
             flushed: true,
 
@@ -643,12 +740,7 @@ impl Connection {
 /// [`serialized`]: ./struct.Connection.html#method.serialized
 #[derive(Debug)]
 pub struct Serialized<T, U> {
-    socket: UdpSocket,
-    peer_address: SocketAddr,
-    connection_id: u64,
-
-    read_buffer: Vec<u8>,
-    write_buffer: Vec<u8>,
+    connection: Connection,
     flushed: bool,
 
     _send: ::std::marker::PhantomData<T>,
@@ -660,8 +752,7 @@ impl<T, U> Serialized<T, U> {
     ///
     /// [`Connection`]: ./struct.Connection.html
     pub fn into_inner(self) -> Connection {
-        let Serialized { socket, peer_address, connection_id, .. } = self;
-        Connection { socket, peer_address, connection_id }
+        self.connection
     }
 }
 
@@ -674,13 +765,15 @@ impl<T, U: DeserializeOwned> Stream for Serialized<T, U> {
             // If there is no more data ready on the socket, return a `WouldBlock` error.
 
             // Read the bytes off the socket.
-            let (bytes_read, address) = try_nb!(self.socket.recv_from(&mut self.read_buffer));
+            let (bytes_read, address) = try_nb!(self.connection.socket.recv_from(
+                &mut self.connection.recv_buffer,
+            ));
 
             // Ignore nay packets that don't come from the server.
-            if address != self.peer_address { continue; }
+            if address != self.connection.peer_address { continue; }
 
             // Decode the packet, discarding it if it fails validation.
-            let packet = match decode(&self.read_buffer[.. bytes_read])? {
+            let packet = match decode(&self.connection.recv_buffer[.. bytes_read])? {
                 Some(packet) => { packet }
                 None => { continue; }
             };
@@ -688,7 +781,13 @@ impl<T, U: DeserializeOwned> Stream for Serialized<T, U> {
             // Handle the packet according to its type, returning the message's data if we
             // received a message packet.
             let message_bytes = match packet.data {
-                PacketData::Message(message_bytes) => { message_bytes }
+                PacketData::Message { sequence_number: _, fragment, num_fragments, fragment_number } => {
+                    if num_fragments != 1 || fragment_number != 0 {
+                        unimplemented!("Support receiving multi-fragment messages");
+                    }
+
+                    fragment
+                }
 
                 // Discard any stray messages that are part of the handshake.
                 PacketData::ConnectionRequest
@@ -720,15 +819,22 @@ impl<T: Serialize, U> Sink for Serialized<T, U> {
         }
 
         // TODO: Don't allocate each time we serialize a message.
-        let serialized = bincode::serialize(&item, bincode::Bounded(1024))
+        let serialized = bincode::serialize(&item, bincode::Bounded(MAX_FRAGMENT_LEN as u64))
             .expect("Serialized size was too big, need to implement message fragmenting");
+
+        self.connection.sequence_number += 1;
 
         encode(
             Packet {
-                connection_id: self.connection_id,
-                data: PacketData::Message(&serialized),
+                connection_id: self.connection.connection_id,
+                data: PacketData::Message {
+                    sequence_number: self.connection.sequence_number,
+                    fragment: &serialized,
+                    num_fragments: 1,
+                    fragment_number: 0,
+                },
             },
-            &mut self.write_buffer,
+            &mut self.connection.send_buffer,
         )?;
         self.flushed = false;
 
@@ -740,10 +846,13 @@ impl<T: Serialize, U> Sink for Serialized<T, U> {
             return Ok(Async::Ready(()))
         }
 
-        let n = try_nb!(self.socket.send_to(&self.write_buffer, &self.peer_address));
+        let n = try_nb!(self.connection.socket.send_to(
+            &self.connection.send_buffer,
+            &self.connection.peer_address,
+        ));
 
-        let wrote_all = n == self.write_buffer.len();
-        self.write_buffer.clear();
+        let wrote_all = n == self.connection.send_buffer.len();
+        self.connection.send_buffer.clear();
         self.flushed = true;
 
         if wrote_all {
@@ -751,7 +860,7 @@ impl<T: Serialize, U> Sink for Serialized<T, U> {
         } else {
             Err(io::Error::new(
                 io::ErrorKind::Other,
-                "failed to write entire datagram to socket",
+                "Failed to write entire datagram to socket",
             ))
         }
     }
@@ -805,7 +914,7 @@ impl Future for ConnectionNew {
             if address != self.peer_address { continue; }
 
             // Decode that sweet, sweet packet.
-            let Packet { connection_id, data } = match decode(&self.read_buffer[.. bytes_read])? {
+            let Packet { connection_id, data, .. } = match decode(&self.read_buffer[.. bytes_read])? {
                 Some(packet) => { packet }
 
                 // Discard any packets that fail basic verification.
@@ -879,6 +988,11 @@ impl Future for ConnectionNew {
                         socket,
                         peer_address: self.peer_address,
                         connection_id: self.connection_id,
+                        sequence_number: 0,
+
+                        send_buffer: mem::replace(&mut self.write_buffer, Vec::new()),
+                        recv_buffer: vec![0; MAX_PACKET_LEN],
+                        fragments: HashMap::new(),
                     }));
                 }
 
@@ -942,10 +1056,227 @@ impl Future for ConnectionNew {
     }
 }
 
+/// A future representing a message being sent; Resolves once the message has been fully sent.
+#[derive(Debug)]
+pub struct Send<T> {
+    state: SendState<T>,
+}
+
+#[derive(Debug)]
+enum SendState<T> {
+    Writing {
+        connection: Connection,
+        buffer: T,
+
+        // The sequence number for the message being sent.
+        sequence_number: u32,
+
+        // Values tracking how many fragments need to be sent and how many have been sent so far.
+        num_fragments: u8,
+        fragment_number: u8,
+    },
+    Empty,
+}
+
+impl<T> Future for Send<T> where T: AsRef<[u8]> {
+    type Item = (Connection, T);
+    type Error = io::Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match self.state {
+            SendState::Writing {
+                ref mut connection,
+                sequence_number,
+                ref buffer,
+                num_fragments,
+                ref mut fragment_number,
+            } => {
+                let buffer = buffer.as_ref();
+
+                // Keep sending fragments until we've sent them all or we would block.
+                loop {
+                    let bytes_sent = try_nb!(connection.socket.send_to(
+                        &connection.send_buffer,
+                        &connection.peer_address,
+                    ));
+
+                    // If we send a datagram that doesn't include all the bytes in the packet,
+                    // then an error occurred.
+                    if bytes_sent != connection.send_buffer.len() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            "Failed to send all bytes of the fragment",
+                        ));
+                    }
+
+                    // If we've sent all the fragments of the message, then we're done sending
+                    // the message.
+                    if *fragment_number == num_fragments { break; }
+
+                    // Write the next fragment of the message.
+                    let fragment_start = (*fragment_number) as usize * MAX_FRAGMENT_LEN;
+                    let fragment_end = cmp::min(fragment_start + MAX_FRAGMENT_LEN, buffer.len());
+                    let fragment = &buffer[fragment_start .. fragment_end];
+                    encode(
+                        Packet {
+                            connection_id: connection.connection_id,
+                            data: PacketData::Message {
+                                sequence_number,
+                                fragment,
+                                num_fragments,
+                                fragment_number: *fragment_number,
+                            },
+                        },
+                        &mut connection.send_buffer,
+                    )?;
+
+                    // Update the current sequence number.
+                    *fragment_number += 1;
+                }
+            }
+
+            SendState::Empty => { panic!("Polled a `Send` after it's done"); }
+        }
+
+        // We've finished sending the message, so return the connection and the buffer.
+        match mem::replace(&mut self.state, SendState::Empty) {
+            SendState::Writing { connection, buffer, .. } => {
+                return Ok(Async::Ready((connection, buffer)));
+            }
+
+            SendState::Empty => { unreachable!("We would have already panicked"); }
+        }
+    }
+}
+
+/// A future used to receive a message from a connection.
+#[derive(Debug)]
+pub struct Receive<T> {
+    state: ReceiveState<T>,
+}
+
+#[derive(Debug)]
+enum ReceiveState<T> {
+    Reading {
+        connection: Connection,
+        buffer: T,
+    },
+    Empty,
+}
+
+impl<T> Future for Receive<T> where T: AsMut<[u8]> {
+    type Item = (Connection, T, usize);
+    type Error = io::Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let message_len;
+        match self.state {
+            ReceiveState::Reading { ref mut connection, ref mut buffer } => {
+                loop {
+                    let (bytes_read, address) = try_nb!(connection.socket.recv_from(
+                        &mut connection.recv_buffer));
+
+                    // If the packet didn't come from the other side of the connection, then
+                    // discard it.
+                    if address != connection.peer_address { continue; }
+
+                    let packet = match decode(&connection.recv_buffer[.. bytes_read])? {
+                        Some(packet) => { packet }
+                        None => { continue; }
+                    };
+
+                    match packet.data {
+                        PacketData::Message {
+                            sequence_number,
+                            fragment,
+                            num_fragments,
+                            fragment_number,
+                        } => {
+                            // If there's only one fragment in the message, treat it as a special
+                            // case and return it directly, to avoid the overhead of stuffing it
+                            // into the fragments map.
+                            if num_fragments == 1 {
+                                // Copy the fragment data into the output buffer.
+                                let dest = &mut buffer.as_mut()[.. fragment.len()];
+                                dest.copy_from_slice(fragment);
+
+                                // Set the message's length to the length of the fragment.
+                                message_len = fragment.len();
+                                break;
+                            }
+
+                            // Retrieve the map containing the fragments that we have received
+                            let message = connection.fragments
+                                .entry(sequence_number)
+                                .or_insert_with(|| MessageFragments {
+                                    num_fragments,
+                                    received: 0,
+                                    bytes_received: 0,
+                                    fragments: [false; MAX_FRAGMENTS_PER_MESSAGE],
+                                });
+
+                            // If the packet specifies a different number of fragments than the
+                            // first packet we received for this message, then discard it.
+                            if num_fragments != message.num_fragments { continue; }
+
+                            // If the fragment number is outside the valid range for this mesage,
+                            // then discard it.
+                            if fragment_number >= message.num_fragments { continue; }
+
+                            // If we haven't already received this fragment, insert it into the
+                            // message.
+                            if !message.fragments[fragment_number as usize] {
+                                // Copy the fragment into the corresponding part of the output
+                                // buffer.
+                                let fragment_start = fragment_number as usize * MAX_FRAGMENT_LEN;
+                                let fragment_end = fragment_start + fragment.len();
+                                let buffer = &mut buffer.as_mut()[fragment_start .. fragment_end];
+                                buffer.copy_from_slice(fragment);
+
+                                // Update the tracking of which fragments we have received so far.
+                                message.fragments[fragment_number as usize] = true;
+                                message.bytes_received += fragment.len();
+                                message.received += 1;
+                            }
+
+                            // Check if we have received all the fragments. If we have, then build
+                            // the message from the fragments.
+                            if message.received == message.num_fragments {
+                                // Verify that we have actually received all of the fragments.
+                                for received in &message.fragments[.. message.num_fragments as usize] {
+                                    assert!(received, "We somehow missed a fragment of the message");
+                                }
+
+                                message_len = message.bytes_received;
+                                break;
+                            }
+                        }
+
+                        PacketData::ConnectionRequest
+                        | PacketData::Challenge(..)
+                        | PacketData::ChallengeResponse(..)
+                        | PacketData::ConnectionAccepted => { continue; }
+                    }
+                }
+            }
+
+            ReceiveState::Empty => { panic!("Receive polled after returning a result"); }
+        }
+
+        match mem::replace(&mut self.state, ReceiveState::Empty) {
+            ReceiveState::Reading { connection, buffer } => {
+                return Ok(Async::Ready((connection, buffer, message_len)));
+            }
+
+            ReceiveState::Empty => { unreachable!("We would have already panicked"); }
+        }
+    }
+}
+
 fn decode<'a>(buffer: &'a [u8]) -> Result<Option<Packet<'a>>, io::Error> {
     // Ignore any messages that are too small to at least contain the header, connection
     // ID, and message type.
-    if buffer.len() < 4 + 8 + 1 { return Ok(None); }
+    if buffer.len() < HEADER_LEN { return Ok(None); }
 
     // The first 4 bytes of the packet are the CRC32 checksum. We split it off from the rest
     // of the packet so that we can verify that the checksum of the data matches the checksum
@@ -975,7 +1306,7 @@ fn decode<'a>(buffer: &'a [u8]) -> Result<Option<Packet<'a>>, io::Error> {
         CONNECTION_REQUEST => {
             // Enforce the connection requests must be the maximum allowed size, in order to
             // avoid our protocl being used as part of a DDOS magnification attack.
-            if buffer.len() != MAX_PACKET_SIZE { return Ok(None); }
+            if buffer.len() != MAX_PACKET_LEN { return Ok(None); }
 
             PacketData::ConnectionRequest
         }
@@ -1005,13 +1336,29 @@ fn decode<'a>(buffer: &'a [u8]) -> Result<Option<Packet<'a>>, io::Error> {
         CONNECTION_ACCEPTED => { PacketData::ConnectionAccepted }
 
         MESSAGE => {
-            let message_len = cursor.read_u32::<NetworkEndian>()? as usize;
+            // Read the sequence number for the message.
+            let sequence_number = cursor.read_u32::<NetworkEndian>()?;
+
+            // Read the number of fragments and the current fragment's number.
+            let num_fragments = cursor.read_u8()?;
+            let fragment_number = cursor.read_u8()?;
+
+            // If the number of fragments is invalid, discard the packet.
+            if num_fragments == 0 || fragment_number >= num_fragments { return Ok(None); }
+
+
+            let message_len = cursor.read_u16::<NetworkEndian>()? as usize;
             let message_start = cursor.position() as usize;
             let message_end = message_start + message_len;
 
             if message_end > body.len() { return Ok(None); }
 
-            PacketData::Message(&body[message_start .. message_end])
+            PacketData::Message {
+                sequence_number,
+                fragment: &body[message_start .. message_end],
+                num_fragments,
+                fragment_number,
+            }
         }
 
         // Ignore any unknown message types.
@@ -1039,7 +1386,7 @@ fn encode<'a>(packet: Packet<'a>, buffer: &mut Vec<u8>) -> Result<(), io::Error>
     match packet.data {
         PacketData::ConnectionRequest => {
             // Force the packet to be the maximum size.
-            buffer.resize(MAX_PACKET_SIZE, 0);
+            buffer.resize(MAX_PACKET_LEN, 0);
         }
 
         PacketData::Challenge(cookie) | PacketData::ChallengeResponse(cookie) => {
@@ -1056,16 +1403,24 @@ fn encode<'a>(packet: Packet<'a>, buffer: &mut Vec<u8>) -> Result<(), io::Error>
 
         PacketData::ConnectionAccepted => {}
 
-        PacketData::Message(message) => {
-            // Write the length of the message into the buffer.
+        PacketData::Message { sequence_number, fragment, num_fragments, fragment_number } => {
+            // Write the sequence number.
+            buffer.write_u32::<NetworkEndian>(sequence_number)?;
+
+            // Write the number of fragments and the fragment number into the buffer.
+            debug_assert!(num_fragments >= 1, "Message must have at least 1 fragment");
+            buffer.write_u8(num_fragments)?;
+            buffer.write_u8(fragment_number)?;
+
+            // Write the length of the fragment into the buffer.
             debug_assert!(
-                message.len() <= MAX_MESSAGE_LEN,
+                fragment.len() <= MAX_FRAGMENT_LEN,
                 "Message is too big for its length to fit in a `u32`"
             );
-            buffer.write_u32::<NetworkEndian>(message.len() as u32)?;
+            buffer.write_u16::<NetworkEndian>(fragment.len() as u16)?;
 
-            // Write the message into the buffer.
-            buffer.extend(message);
+            // Write the fragment into the buffer.
+            buffer.extend(fragment);
         }
     }
 
@@ -1096,6 +1451,31 @@ struct ChallengeCookie {
     connection_id: u64,
 }
 
+/// A collection of fragments for a partially-received message.
+///
+/// This tracks how many fragments are expected as part of the message, how many fragments have
+/// been received so far, and contains the raw data for each of the fragments.
+struct MessageFragments {
+    // The total number of fragments expected for the message.
+    num_fragments: u8,
+
+    // The number of fragments we've received so far.
+    received: u8,
+
+    // The total size in bytes of all the fragments we've received so far. Once the full message
+    // has been received, this will be the full size of the message in bytes.
+    bytes_received: usize,
+
+    // Placeholders for each of the fragments.
+    fragments: [bool; MAX_FRAGMENTS_PER_MESSAGE],
+}
+
+impl ::std::fmt::Debug for MessageFragments {
+    fn fmt(&self, formatter: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
+        write!(formatter, "MessageFragments {{ .. }}")
+    }
+}
+
 #[derive(Debug, Clone)]
 struct OpenConnection {
     local_address: SocketAddr,
@@ -1116,7 +1496,13 @@ enum PacketData<'a> {
     Challenge(&'a [u8]),
     ChallengeResponse(&'a [u8]),
     ConnectionAccepted,
-    Message(&'a [u8]),
+
+    Message {
+        sequence_number: u32,
+        fragment: &'a [u8],
+        num_fragments: u8,
+        fragment_number: u8,
+    },
 }
 
 impl<'a> PacketData<'a> {
@@ -1126,20 +1512,22 @@ impl<'a> PacketData<'a> {
             PacketData::Challenge(..) => CHALLENGE,
             PacketData::ChallengeResponse(..) => CHALLENGE_RESPONSE,
             PacketData::ConnectionAccepted => CONNECTION_ACCEPTED,
-            PacketData::Message(..) => MESSAGE,
+            PacketData::Message { .. } => MESSAGE,
         }
     }
 }
 
 #[cfg(test)]
 mod test {
+    use futures::future;
     use super::*;
+    use tokio_core::reactor::{Core, Timeout};
 
     #[test]
     fn connection_request_roundtrip() {
         const CONNECTION_ID: u64 = 0x0011223344556677;
 
-        let mut buffer = Vec::with_capacity(MAX_PACKET_SIZE);
+        let mut buffer = Vec::with_capacity(MAX_PACKET_LEN);
         let packet = Packet {
             connection_id: CONNECTION_ID,
             data: PacketData::ConnectionRequest,
@@ -1164,7 +1552,7 @@ mod test {
         const CONNECTION_ID: u64 = 0x0011223344556677;
         static COOKIE: &'static [u8] = b"super good cookie that's totally valid";
 
-        let mut buffer = Vec::with_capacity(MAX_PACKET_SIZE);
+        let mut buffer = Vec::with_capacity(MAX_PACKET_LEN);
         let packet = Packet {
             connection_id: CONNECTION_ID,
             data: PacketData::Challenge(COOKIE),
@@ -1189,7 +1577,7 @@ mod test {
         const CONNECTION_ID: u64 = 0x0011223344556677;
         static COOKIE: &'static [u8] = b"super good cookie that's totally valid";
 
-        let mut buffer = Vec::with_capacity(MAX_PACKET_SIZE);
+        let mut buffer = Vec::with_capacity(MAX_PACKET_LEN);
         let packet = Packet {
             connection_id: CONNECTION_ID,
             data: PacketData::ChallengeResponse(COOKIE),
@@ -1213,7 +1601,7 @@ mod test {
     fn connection_accepted_roundtrip() {
         const CONNECTION_ID: u64 = 0x0011223344556677;
 
-        let mut buffer = Vec::with_capacity(MAX_PACKET_SIZE);
+        let mut buffer = Vec::with_capacity(MAX_PACKET_LEN);
         let packet = Packet {
             connection_id: CONNECTION_ID,
             data: PacketData::ConnectionAccepted,
@@ -1231,5 +1619,141 @@ mod test {
 
             None => { panic!("Packet failed verification"); }
         }
+    }
+
+    #[test]
+    fn message_fragment_roundtrip() {
+        const CONNECTION_ID: u64 = 0x0011223344556677;
+        static FRAGMENT: &'static [u8] = b"super good cookie that's totally valid";
+
+        let mut buffer = Vec::with_capacity(MAX_PACKET_LEN);
+        let packet = Packet {
+            connection_id: CONNECTION_ID,
+            data: PacketData::Message {
+                sequence_number: 4,
+                fragment: FRAGMENT,
+                num_fragments: 123,
+                fragment_number: 12,
+            },
+        };
+
+        encode(
+            packet,
+            &mut buffer,
+        ).expect("Error encoding packet");
+
+        match decode(&buffer[..]).expect("Error decoding packet") {
+            Some(decoded) => {
+                assert_eq!(packet, decoded, "Decoded packed doesn't match original");
+            }
+
+            None => { panic!("Packet failed verification"); }
+        }
+    }
+
+    #[test]
+    fn send_recv() {
+        static MESSAGE: &'static [u8] = &[0xAB; 256];
+
+        let mut core = Core::new().unwrap();
+        let handle = core.handle();
+
+        let client = Connection::connect("127.0.0.1:1234".parse().unwrap(), &handle)
+            .unwrap()
+            .and_then(|connection| {
+                connection.send(MESSAGE)
+            })
+            .map(|(_connection, buffer)| {
+                assert_eq!(buffer, MESSAGE);
+            })
+            .map_err(|error| panic!("{:?}", error));
+        let send = Box::new(client) as Box<Future<Item = (), Error = _>>;
+
+        let connection_listener = ConnectionListener::bind("127.0.0.1:1234", &handle)
+            .unwrap()
+            .into_future()
+            .and_then(|(connection, listener)| {
+                // Spawn the connection listener to make sure it's still pumping messages.
+                let listen_remaining = listener
+                    .for_each(|_| -> Result<(), _> {
+                        panic!("Received too many connections");
+                    })
+                    .map_err(|error| panic!("{:?}", error));
+                handle.spawn(listen_remaining);
+
+                let connection = connection.unwrap();
+                connection.recv(vec![0; 1024])
+                    .map_err(|error| panic!("{:?}", error))
+            })
+            .and_then(|(_connection, buffer, len)| {
+                assert_eq!(MESSAGE, &buffer[.. len]);
+                Ok(())
+            })
+            .map_err(|(error, _)| panic!("{:?}", error));
+        let recv = Box::new(connection_listener) as Box<Future<Item = (), Error = _>>;
+
+        let timeout = Timeout::new(Duration::from_secs(1), &handle)
+            .expect("Failed to create timeout")
+            .and_then(|_| -> Result<(), _> {
+                panic!("Timeout occurred");
+            })
+            .map_err(|error| panic!("{:?}", error));
+        handle.spawn(timeout);
+
+        let wait_for_all = future::join_all(vec![send, recv]);
+        core.run(wait_for_all).unwrap();
+    }
+
+    #[test]
+    fn send_recv_large() {
+        static MESSAGE: &'static [u8] = &[0xAB; 4096];
+
+        let mut core = Core::new().unwrap();
+        let handle = core.handle();
+
+        let client = Connection::connect("127.0.0.1:1235".parse().unwrap(), &handle)
+            .unwrap()
+            .and_then(|connection| {
+                connection.send(MESSAGE)
+            })
+            .map(|(_connection, buffer)| {
+                assert_eq!(buffer, MESSAGE);
+            })
+            .map_err(|error| panic!("{:?}", error));
+        let send = Box::new(client) as Box<Future<Item = (), Error = _>>;
+
+        let connection_listener = ConnectionListener::bind("127.0.0.1:1235", &handle)
+            .unwrap()
+            .into_future()
+            .and_then(|(connection, listener)| {
+                // Spawn the connection listener to make sure it's still pumping messages.
+                let listen_remaining = listener
+                    .for_each(|_| -> Result<(), _> {
+                        panic!("Received too many connections");
+                    })
+                    .map_err(|error| panic!("{:?}", error));
+                handle.spawn(listen_remaining);
+
+                let connection = connection.unwrap();
+                connection.recv(vec![0; 4096])
+                    .map_err(|error| panic!("{:?}", error))
+            })
+            .and_then(|(_connection, buffer, len)| {
+                assert_eq!(MESSAGE, &buffer[.. len]);
+                Ok(())
+            })
+            .map_err(|(error, _)| panic!("{:?}", error));
+        let recv = Box::new(connection_listener) as Box<Future<Item = (), Error = _>>;
+
+        let timeout = Timeout::new(Duration::from_secs(1), &handle)
+            .expect("Failed to create timeout")
+            .and_then(|_| -> Result<(), _> {
+                panic!("Timeout occurred");
+            })
+            .map_err(|error| panic!("{:?}", error));
+        handle.spawn(timeout);
+
+        let wait_for_all = future::join_all(vec![send, recv]);
+        core.run(wait_for_all).unwrap();
     }
 }
