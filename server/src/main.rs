@@ -9,7 +9,6 @@ use core::{ClientMessage, ClientMessageBody, DummyNotify, InputState, Player, Se
 use futures::{Async, Future, Sink, Stream};
 use futures::executor;
 use futures::sync::mpsc;
-use futures::sync::oneshot;
 use math::{Point, Orientation};
 use std::io;
 use std::thread;
@@ -18,28 +17,48 @@ use sumi::ConnectionListener;
 use tokio_core::reactor::Core;
 
 fn main() {
-    let (sender, receiver) = oneshot::channel();
-    thread::spawn(|| {
+    let (mut sender, mut new_connections) = mpsc::channel(8);
+    thread::spawn(move || {
         // Create the event loop that will drive network communication.
         let mut core = Core::new().unwrap();
-
-        // Send a remote handle to the reactor back to the main thread.
-        let remote = core.remote();
+        let handle = core.handle();
 
         // Spawn the connection listener onto the reactor and create a new `Stream` that yields each
         // connection as it is received.
         let connection_listener = ConnectionListener::bind("127.0.0.1:1234", &core.handle())
             .expect("Failed to bind socket")
-            .map(|connection| connection.serialized::<ServerMessage, ClientMessage>());
-        let new_connections = mpsc::spawn_unbounded(connection_listener, &core);
-        sender.send((new_connections, remote)).expect("Failed to send");
+            .map(move |connection| {
+                let serialized = connection.serialized::<ServerMessage, ClientMessage>();
+                let (sink, stream) = serialized.split();
 
-        // Run the main loop forever.
-        loop {
-            core.turn(None);
-        }
+                // Spawn the incoming message stream onto the reactor, creating a channel that
+                // can be used to poll for incoming messages from other threads/reactors.
+                let stream = mpsc::spawn(stream, &handle, 8);
+
+                // Spawn the outgoing message sink onto the reactor, creating a channel that can
+                // be used to send outgoing messages from other threads/reactors.
+                let sink = {
+                    let (sender, receiver) = mpsc::channel(8);
+                    let sink = sink
+                        .sink_map_err(|error| {
+                            panic!("Sink error: {:?}", error);
+                        })
+                        .send_all(receiver)
+                        .map(|_| {});
+                    handle.spawn(sink);
+
+                    sender
+                };
+
+                (sink, stream)
+            })
+            .for_each(move |connection| {
+                sender.start_send(connection).expect("Failed to send the connection");
+                Ok(())
+            });
+
+        core.run(connection_listener).expect("Error waiting for connections");
     });
-    let (mut new_connections, remote) = receiver.wait().expect("Faile to receive");
 
     let notify = DummyNotify::new();
 
@@ -62,22 +81,7 @@ fn main() {
                 .expect("Connection listener broke");
 
             match async {
-                Async::Ready(Some(connection)) => {
-                    let (sink, stream) = connection.split();
-
-                    let stream = mpsc::spawn(stream, &remote, 8);
-                    let sink = {
-                        let (sender, receiver) = mpsc::channel(8);
-                        let sink = sink
-                            .sink_map_err(|error| {
-                                panic!("Sink error: {:?}", error);
-                            })
-                            .send_all(receiver)
-                            .map(|_| {});
-                        remote.spawn(|_| sink);
-
-                        sender
-                    };
+                Async::Ready(Some((sink, stream))) => {
 
                     let player = Player {
                         position: Point::origin(),

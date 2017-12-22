@@ -56,46 +56,69 @@ fn main() {
     thread::spawn(move || {
         // Create the event loop that will drive network communication.
         let mut core = Core::new().unwrap();
-
-        // Send a remote handle to the reactor back to the main thread.
-        let remote = core.remote();
+        let handle = core.handle();
 
         // Spawn the connection listener onto the reactor and create a new `Stream` that yields each
         // connection as it is received.
         let address = "127.0.0.1:1234".parse().unwrap();
         let wait_for_connection = Connection::connect(address, &core.handle())
-            .expect("Failed to bind socket");
-        let wait_for_connection = oneshot::spawn(wait_for_connection, &core);
+            .expect("Failed to bind socket")
+            .map(move |connection| {
+                let serialized = connection.serialized::<ClientMessage, ServerMessage>();
+                let (sink, stream) = serialized.split();
 
-        sender.send((wait_for_connection, remote)).expect("Failed to send the remote handle");
+                // Spawn the incoming message stream onto the reactor, creating a channel that
+                // can be used to poll for incoming messages from other threads/reactors.
+                let stream = mpsc::spawn(stream, &handle, 8);
+
+                // Spawn the outgoing message sink onto the reactor, creating a channel that can
+                // be used to send outgoing messages from other threads/reactors.
+                let sink = {
+                    let (sender, receiver) = mpsc::channel(8);
+                    let sink = sink
+                        .sink_map_err(|error| {
+                            panic!("Sink error: {:?}", error);
+                        })
+                        .send_all(receiver)
+                        .map(|_| {});
+                    handle.spawn(sink);
+
+                    sender
+                };
+
+                (sink, stream)
+            })
+            .and_then(move |connection| {
+                sender.send(connection).expect("Failed to send connection");
+                Ok(())
+            })
+            .map_err(|error| {
+                panic!("Error establishing connection: {:?} {:?}", error.kind(), error);
+            });
+        core.handle().spawn(wait_for_connection);
 
         // Run the main loop forever.
         loop {
             core.turn(None);
         }
     });
-    let (wait_for_connection, remote) = receiver.wait().expect("Failed to receive the remote");
 
-    // Bind to the address we want to listen on.
-    let wait_for_connection = wait_for_connection.and_then(|connection| {
-        println!("Connected to the server");
-        connection.serialized::<ClientMessage, ServerMessage>()
-            .into_future()
-            .and_then(|(message, connection)| {
+    let mut wait_for_connection = receiver.and_then(|(sink, stream)| {
+        stream.into_future()
+            .and_then(move |(message, stream)| {
                 let message = message.expect("Disconnected from server");
                 let player = match message.body {
                     ServerMessageBody::PlayerUpdate(player) => player,
                 };
 
-                Ok((connection, player, message.server_frame))
+                Ok((sink, stream, player, message.server_frame))
             })
-            .map_err(|(error, _connection)| {
-                panic!("Error getting init info: {:?}", error.kind());
+            .map_err(|(error, _stream)| {
+                panic!("Error getting init info: {:?} {:?}", error.kind(), error);
             })
     });
 
     let notify = DummyNotify::new();
-    let mut wait_for_connection = oneshot::spawn(wait_for_connection, &remote);
 
     // Game state variables.
     let mut game_state: Option<GameState> = None;
@@ -227,7 +250,7 @@ fn main() {
                 let async = executor::spawn(&mut wait_for_connection)
                     .poll_future_notify(&notify, 0)
                     .expect("I/O thread cancelled sending connection");
-                if let Async::Ready((connection, player, latest_server_frame)) = async {
+                if let Async::Ready((sender, receiver, player, latest_server_frame)) = async {
                     // Create a player avatar in the scene with the player information.
                     // ================================================================
 
@@ -266,22 +289,6 @@ fn main() {
 
                     // Set ambient color to pure white so we don't need to worry about lighting.
                     renderer.set_ambient_light(Color::rgb(1.0, 1.0, 1.0));
-
-                    let (sink, stream) = connection.split();
-
-                    let receiver = mpsc::spawn(stream, &remote, 8);
-                    let sender = {
-                        let (sender, receiver) = mpsc::channel(8);
-                        let sink = sink
-                            .sink_map_err(|error| {
-                                panic!("Sink error: {:?}", error);
-                            })
-                            .send_all(receiver)
-                            .map(|_| {});
-                        remote.spawn(|_| sink);
-
-                        sender
-                    };
 
                     game_state = Some(GameState {
                         sender,
