@@ -2,10 +2,11 @@ extern crate core;
 extern crate futures;
 extern crate futures_cpupool;
 extern crate polygon_math as math;
+extern crate rand;
 extern crate sumi;
 extern crate tokio_core;
 
-use core::{ClientMessage, ClientMessageBody, DummyNotify, InputState, Player, ServerMessage, ServerMessageBody};
+use core::*;
 use futures::{Async, Future, Sink, Stream};
 use futures::executor;
 use futures::sync::mpsc;
@@ -17,7 +18,7 @@ use sumi::ConnectionListener;
 use tokio_core::reactor::Core;
 
 fn main() {
-    let (mut sender, mut new_connections) = mpsc::channel(8);
+    let (mut sender, new_connections) = mpsc::channel(8);
     thread::spawn(move || {
         // Create the event loop that will drive network communication.
         let mut core = Core::new().unwrap();
@@ -59,11 +60,13 @@ fn main() {
 
         core.run(connection_listener).expect("Error waiting for connections");
     });
+    let mut new_connections = executor::spawn(new_connections);
 
     let notify = DummyNotify::new();
 
-    // Store clients in a hash map, using their address as the key.
+    // Create the list of clients and the world state.
     let mut clients = Vec::<Client>::new();
+    let mut world = World::new();
 
     // Run the main loop of the game.
     let start_time = Instant::now();
@@ -76,23 +79,47 @@ fn main() {
 
         // TODO: Process any new connections.
         loop {
-            let async = executor::spawn(&mut new_connections)
-                .poll_stream_notify(&notify, 0)
+            let async = new_connections.poll_stream_notify(&notify, 0)
                 .expect("Connection listener broke");
 
             match async {
-                Async::Ready(Some((sink, stream))) => {
-
+                Async::Ready(Some((mut sink, stream))) => {
+                    let id = rand::random();
                     let player = Player {
                         position: Point::origin(),
                         orientation: Orientation::new(),
                     };
 
+                    // Add the player to the world.
+                    world.players.insert(id, player.clone());
+
+                    // Send the current world state to the new client.
+                    // TODO: This should be a send-reliable.
+                    sink.start_send(ServerMessage {
+                        server_frame: frame_count,
+                        client_frame: 0,
+                        body: ServerMessageBody::Init { id, world: world.clone() },
+                    }).expect("Failed to send initial state");
+
+                    // Notify all other connected clients that a new player joined.
+                    for client in &mut clients {
+                        // TODO: This should be a send-reliable.
+                        client.sink.start_send(ServerMessage {
+                            server_frame: frame_count,
+                            client_frame: client.latest_frame,
+                            body: ServerMessageBody::PlayerJoined {
+                                id,
+                                player: player.clone(),
+                            },
+                        }).expect("Failed to send player joined message");
+                    }
+
+                    // Add the client to the list of connected clients.
                     clients.push(Client {
                         stream,
                         sink,
 
-                        player,
+                        id,
                         input: InputState::default(),
 
                         latest_frame: 0,
@@ -138,14 +165,17 @@ fn main() {
             }
 
             // Tick the player.
-            client.player.step(&client.input, delta);
+            let player = world.players.get_mut(&client.id).expect("No player for id");
+            player.step(&client.input, delta);
+        }
 
-            // Send the player's current state to the client.
+        // Send the current world state to each of the connected clients.
+        for client in &mut clients {
             executor::spawn(&mut client.sink).start_send_notify(
                 ServerMessage {
                     server_frame: frame_count,
                     client_frame: client.latest_frame,
-                    body: ServerMessageBody::PlayerUpdate(client.player.clone()),
+                    body: ServerMessageBody::WorldUpdate(world.clone()),
                 },
                 &notify,
                 0,
@@ -174,7 +204,7 @@ struct Client {
     stream: mpsc::SpawnHandle<ClientMessage, io::Error>,
     sink: mpsc::Sender<ServerMessage>,
 
-    player: Player,
+    id: u64,
     input: InputState,
 
     /// The most recent frame of input that the client sent.

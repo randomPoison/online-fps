@@ -6,15 +6,15 @@ extern crate sumi;
 extern crate tokio_core;
 extern crate winit;
 
-use core::{ClientMessage, ClientMessageBody, DummyNotify, InputState, Player, PollReady, ServerMessage, ServerMessageBody};
+use core::*;
 use gl_winit::CreateContext;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use futures::prelude::*;
 use futures::sync::mpsc;
 use futures::sync::oneshot;
 use futures::executor;
-use polygon::{Renderer};
+use polygon::{GpuMesh, Renderer};
 use polygon::anchor::{Anchor, AnchorId};
 use polygon::camera::Camera;
 use polygon::geometry::mesh::MeshBuilder;
@@ -107,11 +107,16 @@ fn main() {
         stream.into_future()
             .and_then(move |(message, stream)| {
                 let message = message.expect("Disconnected from server");
-                let player = match message.body {
-                    ServerMessageBody::PlayerUpdate(player) => player,
-                };
+                match message.body {
+                    ServerMessageBody::Init { id, world } => {
+                        Ok((sink, stream, id, world, message.server_frame))
+                    }
 
-                Ok((sink, stream, player, message.server_frame))
+                    // TODO: We should just ignore any wrong messages.
+                    ServerMessageBody::WorldUpdate(..)
+                    | ServerMessageBody::PlayerJoined { .. }
+                    => { panic!("Got the wrong message"); }
+                }
             })
             .map_err(|(error, _stream)| {
                 panic!("Error getting init info: {:?} {:?}", error.kind(), error);
@@ -124,7 +129,35 @@ fn main() {
     let mut game_state: Option<GameState> = None;
     let mut input_state = InputState::default();
 
-    // Run the main loop of the game, rendering once per frame.
+    // Setup the camera and mesh data for the renderer.
+    // ================================================
+
+    // Create a camera and an anchor for it.
+    let mut camera_anchor = Anchor::new();
+    camera_anchor.set_position(Point::new(0.0, 10.0, 0.0));
+    camera_anchor.set_orientation(Orientation::look_rotation(Vector3::DOWN, Vector3::FORWARD));
+    let camera_anchor_id = renderer.register_anchor(camera_anchor);
+
+    let mut camera = Camera::default();
+    camera.set_anchor(camera_anchor_id);
+    renderer.register_camera(camera);
+
+    // Set ambient color to pure white so we don't need to worry about lighting.
+    renderer.set_ambient_light(Color::rgb(1.0, 1.0, 1.0));
+
+    // Build a triangle mesh.
+    let mesh = MeshBuilder::new()
+        .set_position_data(Point::slice_from_f32_slice(&VERTEX_POSITIONS))
+        .set_indices(&INDICES)
+        .build()
+        .unwrap();
+
+    // Send the mesh to the GPU.
+    let gpu_mesh = renderer.register_mesh(&mesh);
+
+    // Run the main loop of the game.
+    // ==============================
+
     let target_frame_time = Duration::from_secs(1) / 60;
     let delta = 1.0 / 60.0;
     let mut frame_count = 0;
@@ -201,9 +234,20 @@ fn main() {
 
                     // Check the body of the message and update our local copy of the server state.
                     match message.body {
-                        ServerMessageBody::PlayerUpdate(player) => {
-                            state.server_player = player;
+                        ServerMessageBody::WorldUpdate(world) => {
+                            state.server_world = world;
                         }
+
+                        ServerMessageBody::PlayerJoined { id, player } => {
+                            // Create renderer resources for the new player.
+                            let anchor = create_player_render(&mut renderer, gpu_mesh, &player);
+                            state.render_state.insert(id, anchor);
+
+                            let old_player = state.local_world.players.insert(id, player);
+                            assert!(old_player.is_none(), "Received player joined messaged but already had player");
+                        }
+
+                        ServerMessageBody::Init { .. } => {}
                     }
 
                     received_message = true;
@@ -222,25 +266,41 @@ fn main() {
                 // state to sync up with the expected current state of the server.
                 if received_message {
                     // Reset the local state the most recent server state.
-                    state.local_player = state.server_player.clone();
+                    state.local_world = state.server_world.clone();
 
                     // Replay the frame history on top of the server state to derive a new
                     // local state.
+                    let player = state.local_world
+                        .players
+                        .get_mut(&state.id)
+                        .expect("Couldn't find player in local state");
                     for &(_, ref input) in &state.input_history {
-                        state.local_player.step(input, delta);
+                        player.step(input, delta);
                     }
+
+                    // TODO: Simulate forward for the other players.
                 } else {
                     // We haven't received a new frame from the server, so we only simulate a
                     // single frame on top of the current state.
-                    let &(_, ref input) = state.input_history.back().expect("Input history is empty");
-                    state.local_player.step(input, delta);
+                    let player = state.local_world
+                        .players
+                        .get_mut(&state.id)
+                        .expect("Couldn't find player in local state");
+                    let &(_, ref input) = state.input_history
+                        .back()
+                        .expect("Input history is empty");
+                    player.step(input, delta);
                 }
 
-                // Update the current state with the renderer.
-                {
-                    let anchor = renderer.get_anchor_mut(state.player_anchor).unwrap();
-                    anchor.set_position(state.local_player.position);
-                    anchor.set_orientation(state.local_player.orientation);
+                // TODO: Update the render state for all players.
+                for (id, player) in &state.local_world.players {
+                    println!("Updating anchor for {:#x}", id);
+                    let anchor_id = state.render_state
+                        .get(&id)
+                        .expect("No anchor id exists for player");
+                    let anchor = renderer.get_anchor_mut(*anchor_id).expect("No anchor for ID");
+                    anchor.set_position(player.position);
+                    anchor.set_orientation(player.orientation);
                 }
 
                 game_state = Some(state);
@@ -250,56 +310,30 @@ fn main() {
                 let async = executor::spawn(&mut wait_for_connection)
                     .poll_future_notify(&notify, 0)
                     .expect("I/O thread cancelled sending connection");
-                if let Async::Ready((sender, receiver, player, latest_server_frame)) = async {
+                if let Async::Ready((sender, receiver, id, world, latest_server_frame)) = async {
+                    println!("Got id: {:#x}", id);
+
                     // Create a player avatar in the scene with the player information.
                     // ================================================================
 
-                    // Build a triangle mesh.
-                    let mesh = MeshBuilder::new()
-                        .set_position_data(Point::slice_from_f32_slice(&VERTEX_POSITIONS))
-                        .set_indices(&INDICES)
-                        .build()
-                        .unwrap();
+                    let mut render_state = HashMap::new();
 
-                    // Send the mesh to the GPU.
-                    let gpu_mesh = renderer.register_mesh(&mesh);
-
-                    // Create an anchor and register it with the renderer.
-                    let anchor = Anchor::new();
-                    let player_anchor = renderer.register_anchor(anchor);
-
-                    // Setup the material for the mesh.
-                    let mut material = renderer.default_material();
-                    material.set_color("surface_color", Color::rgb(1.0, 0.0, 0.0));
-
-                    // Create a mesh instance, attach it to the anchor, and register it.
-                    let mut mesh_instance = MeshInstance::with_owned_material(gpu_mesh, material);
-                    mesh_instance.set_anchor(player_anchor);
-                    renderer.register_mesh_instance(mesh_instance);
-
-                    // Create a camera and an anchor for it.
-                    let mut camera_anchor = Anchor::new();
-                    camera_anchor.set_position(Point::new(0.0, 10.0, 0.0));
-                    camera_anchor.set_orientation(Orientation::look_rotation(Vector3::DOWN, Vector3::FORWARD));
-                    let camera_anchor_id = renderer.register_anchor(camera_anchor);
-
-                    let mut camera = Camera::default();
-                    camera.set_anchor(camera_anchor_id);
-                    renderer.register_camera(camera);
-
-                    // Set ambient color to pure white so we don't need to worry about lighting.
-                    renderer.set_ambient_light(Color::rgb(1.0, 1.0, 1.0));
+                    for (id, player) in &world.players {
+                        let player_anchor = create_player_render(&mut renderer, gpu_mesh, player);
+                        render_state.insert(*id, player_anchor);
+                    }
 
                     game_state = Some(GameState {
+                        id,
                         sender,
                         receiver,
 
-                        player_anchor,
+                        render_state,
 
                         input_history: VecDeque::new(),
-                        local_player: player.clone(),
+                        local_world: world.clone(),
 
-                        server_player: player,
+                        server_world: world,
                         latest_server_frame,
                         server_client_frame: 0,
                     });
@@ -325,10 +359,11 @@ fn main() {
 
 #[derive(Debug)]
 struct GameState {
+    id: u64,
     sender: mpsc::Sender<ClientMessage>,
     receiver: mpsc::SpawnHandle<ServerMessage, io::Error>,
 
-    player_anchor: AnchorId,
+    render_state: HashMap<u64, AnchorId>,
 
     // Local state.
     // ============
@@ -338,15 +373,14 @@ struct GameState {
     /// Used to replay input locally on top of server state to compensate for latency.
     input_history: VecDeque<(usize, InputState)>,
 
-    /// The local player state, derived by playing input history on top of the most recently known
-    /// server state.
-    local_player: Player,
+    /// The local world state, derived by simulating forward from the most recent server state.
+    local_world: World,
 
     // Server state.
     // =============
 
-    /// The current state of the player, as specified by the server.
-    server_player: Player,
+    // The most recent world state received from the client.
+    server_world: World,
 
     /// The most recent frame received from the server.
     ///
@@ -358,4 +392,27 @@ struct GameState {
     /// Used to determine how much of the local state needs to be replayed on top of the server
     /// state to "catch up" with the server.
     server_client_frame: usize,
+}
+
+/// Creates the renderer resources for a player, using the provided mesh.
+///
+/// Returns the anchor ID for the player.
+fn create_player_render(renderer: &mut GlRender, mesh: GpuMesh, player: &Player) -> AnchorId {
+    // Create an anchor and register it with the renderer.
+    let mut anchor = Anchor::new();
+    anchor.set_position(player.position);
+    anchor.set_orientation(player.orientation);
+
+    let player_anchor = renderer.register_anchor(anchor);
+
+    // Setup the material for the mesh.
+    let mut material = renderer.default_material();
+    material.set_color("surface_color", Color::rgb(1.0, 0.0, 0.0));
+
+    // Create a mesh instance, attach it to the anchor, and register it.
+    let mut mesh_instance = MeshInstance::with_owned_material(mesh, material);
+    mesh_instance.set_anchor(player_anchor);
+    renderer.register_mesh_instance(mesh_instance);
+
+    player_anchor
 }

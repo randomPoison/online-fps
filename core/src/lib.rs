@@ -8,8 +8,23 @@ extern crate serde_derive;
 use futures::{Async, Stream};
 use futures::executor::{Notify, Spawn};
 use math::*;
+use std::collections::HashMap;
 use std::str;
 use std::sync::Arc;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct World {
+    pub players: HashMap<u64, Player>,
+}
+
+impl World {
+    /// Creates an empty world.
+    pub fn new() -> World {
+        World {
+            players: HashMap::new(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
@@ -101,7 +116,20 @@ pub struct ServerMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMessageBody {
-    PlayerUpdate(Player),
+    // TODO: Add the full world state to the init message.
+    // TODO: Split the init message out to a separate message type, to better indicate that it
+    // won't be sent during normal gameplay.
+    Init {
+        id: u64,
+        world: World,
+    },
+
+    WorldUpdate(World),
+
+    PlayerJoined {
+        id: u64,
+        player: Player,
+    },
 }
 
 /// A message sent from the client to the server.
