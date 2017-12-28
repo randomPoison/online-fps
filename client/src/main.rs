@@ -1,6 +1,9 @@
 extern crate core;
 extern crate futures;
 extern crate gl_winit;
+#[macro_use]
+extern crate log;
+extern crate log4rs;
 extern crate polygon;
 extern crate sumi;
 extern crate tokio_core;
@@ -20,7 +23,7 @@ use polygon::camera::Camera;
 use polygon::geometry::mesh::MeshBuilder;
 use polygon::gl::GlRender;
 use polygon::math::{Color, Orientation, Point, Vector3};
-use polygon::mesh_instance::MeshInstance;
+use polygon::mesh_instance::{MeshInstance, MeshInstanceId};
 use std::io;
 use std::thread;
 use sumi::Connection;
@@ -40,6 +43,9 @@ static VERTEX_POSITIONS: [f32; 12] = [
 static INDICES: [u32; 3] = [0, 1, 2];
 
 fn main() {
+    // Initialize logging first so that we can start capturing logs immediately.
+    log4rs::init_file("../log4rs.toml", Default::default()).expect("Failed to init log4rs");
+
     // Open a window.
     let mut events_loop = EventsLoop::new();
     let window = WindowBuilder::new()
@@ -240,18 +246,32 @@ fn main() {
                         }
 
                         ServerMessageBody::PlayerJoined { id, player } => {
+                            debug!("Player joined, ID: {:#x}, state: {:?}", id, player);
+
                             // Create renderer resources for the new player.
-                            let anchor = create_player_render(&mut renderer, gpu_mesh, &player);
-                            state.render_state.insert(id, anchor);
+                            let render_state = create_player_render(
+                                &mut renderer,
+                                gpu_mesh,
+                                &player,
+                            );
+                            trace!("Created render state for player {:#x}: {:?}", id, render_state);
+                            state.render_state.insert(id, render_state);
 
                             let old_player = state.local_world.players.insert(id, player);
                             assert!(old_player.is_none(), "Received player joined messaged but already had player");
                         }
 
                         ServerMessageBody::PlayerLeft { id } => {
+                            debug!("Player left: {:#x}", id);
+
                             state.local_world.players.remove(&id);
 
-                            // TODO: Remove the renderer state for the player that left.
+                            // Remove the render state for the player that left.
+                            let render_state = state.render_state
+                                .remove(&id)
+                                .expect("No render state for player");
+                            renderer.remove_mesh_instance(render_state.mesh_instance);
+                            renderer.remove_anchor(render_state.anchor);
                         }
 
                         ServerMessageBody::Init { .. } => {}
@@ -299,14 +319,22 @@ fn main() {
                     player.step(input, delta);
                 }
 
-                // TODO: Update the render state for all players.
+                // Update the render state for all players.
                 for (id, player) in &state.local_world.players {
-                    let anchor_id = state.render_state
-                        .get(&id)
-                        .expect("No anchor id exists for player");
-                    let anchor = renderer.get_anchor_mut(*anchor_id).expect("No anchor for ID");
-                    anchor.set_position(player.position);
-                    anchor.set_orientation(player.orientation);
+                    if let Some(render_state) = state.render_state.get(&id) {
+                        trace!(
+                            "Updating render state for player {:?}, local state: {:?}, render state: {:?}",
+                            id,
+                            player,
+                            render_state,
+                        );
+                        let anchor = renderer.get_anchor_mut(render_state.anchor)
+                            .expect("No anchor for player in the renderer");
+                        anchor.set_position(player.position);
+                        anchor.set_orientation(player.orientation);
+                    } else {
+                        warn!("Player {:?} is in local state but has no render state", id);
+                    }
                 }
 
                 game_state = Some(state);
@@ -317,7 +345,7 @@ fn main() {
                     .poll_future_notify(&notify, 0)
                     .expect("I/O thread cancelled sending connection");
                 if let Async::Ready((sender, receiver, id, world, latest_server_frame)) = async {
-                    println!("Got id: {:#x}", id);
+                    info!("Established to server, player ID: {:#x}", id);
 
                     // Create a player avatar in the scene with the player information.
                     // ================================================================
@@ -325,8 +353,8 @@ fn main() {
                     let mut render_state = HashMap::new();
 
                     for (id, player) in &world.players {
-                        let player_anchor = create_player_render(&mut renderer, gpu_mesh, player);
-                        render_state.insert(*id, player_anchor);
+                        let player_render = create_player_render(&mut renderer, gpu_mesh, player);
+                        render_state.insert(*id, player_render);
                     }
 
                     game_state = Some(GameState {
@@ -369,7 +397,7 @@ struct GameState {
     sender: mpsc::Sender<ClientMessage>,
     receiver: mpsc::SpawnHandle<ServerMessage, io::Error>,
 
-    render_state: HashMap<u64, AnchorId>,
+    render_state: HashMap<u64, RenderState>,
 
     // Local state.
     // ============
@@ -400,16 +428,22 @@ struct GameState {
     server_client_frame: usize,
 }
 
+#[derive(Debug)]
+struct RenderState {
+    anchor: AnchorId,
+    mesh_instance: MeshInstanceId,
+}
+
 /// Creates the renderer resources for a player, using the provided mesh.
 ///
 /// Returns the anchor ID for the player.
-fn create_player_render(renderer: &mut GlRender, mesh: GpuMesh, player: &Player) -> AnchorId {
+fn create_player_render(renderer: &mut GlRender, mesh: GpuMesh, player: &Player) -> RenderState {
     // Create an anchor and register it with the renderer.
     let mut anchor = Anchor::new();
     anchor.set_position(player.position);
     anchor.set_orientation(player.orientation);
 
-    let player_anchor = renderer.register_anchor(anchor);
+    let anchor_id = renderer.register_anchor(anchor);
 
     // Setup the material for the mesh.
     let mut material = renderer.default_material();
@@ -417,8 +451,11 @@ fn create_player_render(renderer: &mut GlRender, mesh: GpuMesh, player: &Player)
 
     // Create a mesh instance, attach it to the anchor, and register it.
     let mut mesh_instance = MeshInstance::with_owned_material(mesh, material);
-    mesh_instance.set_anchor(player_anchor);
-    renderer.register_mesh_instance(mesh_instance);
+    mesh_instance.set_anchor(anchor_id);
+    let instance_id = renderer.register_mesh_instance(mesh_instance);
 
-    player_anchor
+    RenderState {
+        anchor: anchor_id,
+        mesh_instance: instance_id,
+    }
 }

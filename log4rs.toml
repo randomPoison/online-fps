@@ -1,0 +1,16 @@
+refresh_rate = "1 seconds"
+
+[appenders.stdout]
+kind = "console"
+
+[appenders.stdout.encoder]
+kind = "pattern"
+pattern = "{d(%Y-%m-%d %H:%M:%S%.3f)} {h({l:<5})} {t} - {m}{n}"
+
+[root]
+level = "warn"
+appenders = ["stdout"]
+
+[loggers]
+client = { level = "debug" }
+server = { level = "debug" }

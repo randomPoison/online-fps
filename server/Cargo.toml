@@ -8,6 +8,8 @@ bytes = "0.4"
 core = { path = "../core" }
 futures = "0.1"
 futures-cpupool = "0.1"
+log = "0.4"
+log4rs = { version = "0.8", features = ["toml_format"] }
 polygon-math = { git = "https://github.com/randomPoison/polygon", features = ["serde-impls"] }
 rand = "0.4.1"
 sumi = { path = "../sumi" }

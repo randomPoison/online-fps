@@ -7,6 +7,8 @@ authors = ["David LeGare <excaliburhissheath@gmail.com>"]
 core = { path = "../core" }
 futures = "0.1"
 gl-winit = { git = "https://github.com/randomPoison/polygon" }
+log = "0.4"
+log4rs = { version = "0.8", features = ["toml_format"] }
 polygon = { git = "https://github.com/randomPoison/polygon" }
 sumi = { path = "../sumi" }
 tokio-core = "0.1"

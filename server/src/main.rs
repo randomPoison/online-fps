@@ -1,6 +1,9 @@
 extern crate core;
 extern crate futures;
 extern crate futures_cpupool;
+#[macro_use]
+extern crate log;
+extern crate log4rs;
 extern crate polygon_math as math;
 extern crate rand;
 extern crate sumi;
@@ -18,6 +21,9 @@ use sumi::ConnectionListener;
 use tokio_core::reactor::Core;
 
 fn main() {
+    // Initialize logging first so that we can start capturing logs immediately.
+    log4rs::init_file("../log4rs.toml", Default::default()).expect("Failed to init log4rs");
+
     let (mut sender, new_connections) = mpsc::channel(8);
     thread::spawn(move || {
         // Create the event loop that will drive network communication.
@@ -85,6 +91,8 @@ fn main() {
             match async {
                 Async::Ready(Some((mut sink, stream))) => {
                     let id = rand::random();
+                    info!("New player joined and was assigned ID {:#x}", id);
+
                     let player = Player {
                         position: Point::origin(),
                         orientation: Orientation::new(),
@@ -144,6 +152,8 @@ fn main() {
                     .poll_stream_notify(&notify, 0);
                 match async {
                     Ok(Async::Ready(Some(message))) => {
+                        trace!("Got message for client {:#x}: {:?}", client.id, message);
+
                         // If we receive the message out of order, straight up ignore it.
                         // TODO: Handle out of order messages within the protocol.
                         if message.frame < client.latest_frame { continue; }
@@ -161,6 +171,8 @@ fn main() {
                     // disconnected from the client. We mark the client as disconnected, and add
                     // it to the list of disconnected clients.
                     Ok(Async::Ready(None)) | Err(..) => {
+                        info!("Disconnected from client {:#x}", client.id);
+
                         client.connected = false;
                         disconnected.push(client.id);
                         break;
@@ -178,8 +190,11 @@ fn main() {
         // Remove any clients that have disconnected.
         clients.retain(|client| client.connected);
 
-        // Notify all connected clients of the players that have left the game.
+        // Remove disconnected players from the game world, and notify connected clients of each
+        // player that leaves.
         for id in disconnected {
+            world.players.remove(&id).expect("Tried to remove player but player didn't exist");
+
             for client in &mut clients {
                 // TODO: This should be a send-reliable.
                 client.sink.start_send(ServerMessage {
