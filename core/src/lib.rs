@@ -116,20 +116,32 @@ pub struct ServerMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMessageBody {
-    // TODO: Add the full world state to the init message.
     // TODO: Split the init message out to a separate message type, to better indicate that it
     // won't be sent during normal gameplay.
     Init {
+        /// The ID for the current client's player.
         id: u64,
+
+        /// The current state of the world.
         world: World,
     },
 
+    /// The current state of the entire game world.
     WorldUpdate(World),
 
+    /// A new player has left the game, and should be added to the scene.
     PlayerJoined {
+        /// The unique ID for the new player.
         id: u64,
+
+        /// The current state of the player.
         player: Player,
     },
+
+    /// A player left the game, and should be removed from the scene.
+    PlayerLeft {
+        id: u64,
+    }
 }
 
 /// A message sent from the client to the server.

@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use super::{encode, Connection, MAX_FRAGMENT_LEN, Packet, PacketData};
 
 /// A future representing a message being sent; Resolves once the message has been fully sent.
-// TODO: Implement `Debug` manually. It can't be derived because `Timeout` doesn't impl `Debug`.
+#[derive(Debug)]
 pub struct Send<T> where T: AsRef<[u8]> {
     pub(crate) state: StateFuture<T>,
 }
@@ -22,6 +22,7 @@ impl<T> Future for Send<T> where T: AsRef<[u8]> {
 
 #[derive(StateMachineFuture)]
 #[allow(dead_code)]
+#[state_machine_future(derive(Debug))]
 pub(crate) enum State<T> where T: AsRef<[u8]> {
     #[state_machine_future(start, transitions(Ready))]
     Sending {

@@ -115,6 +115,7 @@ fn main() {
                     // TODO: We should just ignore any wrong messages.
                     ServerMessageBody::WorldUpdate(..)
                     | ServerMessageBody::PlayerJoined { .. }
+                    | ServerMessageBody::PlayerLeft { .. }
                     => { panic!("Got the wrong message"); }
                 }
             })
@@ -247,6 +248,12 @@ fn main() {
                             assert!(old_player.is_none(), "Received player joined messaged but already had player");
                         }
 
+                        ServerMessageBody::PlayerLeft { id } => {
+                            state.local_world.players.remove(&id);
+
+                            // TODO: Remove the renderer state for the player that left.
+                        }
+
                         ServerMessageBody::Init { .. } => {}
                     }
 
@@ -294,7 +301,6 @@ fn main() {
 
                 // TODO: Update the render state for all players.
                 for (id, player) in &state.local_world.players {
-                    println!("Updating anchor for {:#x}", id);
                     let anchor_id = state.render_state
                         .get(&id)
                         .expect("No anchor id exists for player");

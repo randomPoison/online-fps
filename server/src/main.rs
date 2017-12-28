@@ -77,7 +77,7 @@ fn main() {
     loop {
         frame_count += 1;
 
-        // TODO: Process any new connections.
+        // Handle any new connections, adding a new player for the new client.
         loop {
             let async = new_connections.poll_stream_notify(&notify, 0)
                 .expect("Connection listener broke");
@@ -118,6 +118,7 @@ fn main() {
                     clients.push(Client {
                         stream,
                         sink,
+                        connected: true,
 
                         id,
                         input: InputState::default(),
@@ -135,14 +136,14 @@ fn main() {
         // For each connected client, process any incoming messages from the client, step the
         // player based on the current input state, and then send the player's current state back
         // to the client.
+        let mut disconnected = Vec::new();
         for client in &mut clients {
             // Poll the client's stream of incoming messages and handle each one we receive.
             loop {
                 let async = executor::spawn(&mut client.stream)
-                    .poll_stream_notify(&notify, 0)
-                    .expect("Client disconnected?");
+                    .poll_stream_notify(&notify, 0);
                 match async {
-                    Async::Ready(Some(message)) => {
+                    Ok(Async::Ready(Some(message))) => {
                         // If we receive the message out of order, straight up ignore it.
                         // TODO: Handle out of order messages within the protocol.
                         if message.frame < client.latest_frame { continue; }
@@ -156,17 +157,37 @@ fn main() {
                         }
                     }
 
-                    Async::Ready(None) => {
-                        unimplemented!("Client disconnected!");
+                    // If there's an error or the stream is done yielding messages, then we have
+                    // disconnected from the client. We mark the client as disconnected, and add
+                    // it to the list of disconnected clients.
+                    Ok(Async::Ready(None)) | Err(..) => {
+                        client.connected = false;
+                        disconnected.push(client.id);
+                        break;
                     }
 
-                    Async::NotReady => { break; }
+                    Ok(Async::NotReady) => { break; }
                 }
             }
 
             // Tick the player.
             let player = world.players.get_mut(&client.id).expect("No player for id");
             player.step(&client.input, delta);
+        }
+
+        // Remove any clients that have disconnected.
+        clients.retain(|client| client.connected);
+
+        // Notify all connected clients of the players that have left the game.
+        for id in disconnected {
+            for client in &mut clients {
+                // TODO: This should be a send-reliable.
+                client.sink.start_send(ServerMessage {
+                    server_frame: frame_count,
+                    client_frame: client.latest_frame,
+                    body: ServerMessageBody::PlayerLeft { id },
+                }).expect("Failed to send player joined message");
+            }
         }
 
         // Send the current world state to each of the connected clients.
@@ -203,6 +224,7 @@ fn main() {
 struct Client {
     stream: mpsc::SpawnHandle<ClientMessage, io::Error>,
     sink: mpsc::Sender<ServerMessage>,
+    connected: bool,
 
     id: u64,
     input: InputState,

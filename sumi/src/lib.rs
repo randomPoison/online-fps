@@ -1,3 +1,10 @@
+//! Networking library for client/server multiplayer games.
+//!
+//! Sumi provides a high level API for building networked games. It is built on top of [tokio],
+//! and provides an async, futures-based API.
+//!
+//! [tokio]: https://tokio.rs/
+
 extern crate bincode;
 extern crate byteorder;
 extern crate crc;
@@ -34,7 +41,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::str;
 use std::time::{Duration, Instant};
 use tokio_core::net::UdpSocket;
-use tokio_core::reactor::{Handle, Interval};
+use tokio_core::reactor::{Handle, Interval, Timeout};
 
 pub use self::send::Send;
 pub use self::send_reliable::SendReliable;
@@ -298,6 +305,7 @@ impl Stream for ConnectionListener {
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        // Poll the socket for incoming packets, forwarding valid packets to the correct endpoint.
         loop {
             // Read any available messages on the socket. Once we receive a `WouldBlock` error,
             // there is no more data to receive.
@@ -306,7 +314,7 @@ impl Stream for ConnectionListener {
 
                 Err(error) => {
                     match error.kind() {
-                        io::ErrorKind::WouldBlock => { return Ok(Async::NotReady); }
+                        io::ErrorKind::WouldBlock => { break; }
 
                         // On Windows, this is returned when a previous send operation resulted
                         // in an ICMP Port Unreachable message. Unfortunately, we don't get
@@ -473,6 +481,9 @@ impl Stream for ConnectionListener {
                             let local_address = socket.local_addr()?;
 
                             // Create a client that sends messages to the connection listener.
+                            // TODO: Make disconnect timeout configurable.
+                            let disconnect_timeout =
+                                Timeout::new(Duration::from_secs(1), &self.handle)?;
                             let client = Connection {
                                 socket,
                                 peer_address: self.local_address,
@@ -484,13 +495,17 @@ impl Stream for ConnectionListener {
                                 fragments: HashMap::new(),
 
                                 handle: self.handle.clone(),
+
+                                disconnect_timeout,
                             };
 
+                            // TODO: Make disconnect timeout configurable.
+                            let disconnect_timeout =
+                                Timeout::new(Duration::from_secs(1), &self.handle)?;
                             let connection = OpenConnection {
                                 local_address,
                                 remote_address: address,
-
-                                _last_received_time: Instant::now(),
+                                disconnect_timeout,
                             };
                             (entry.insert(connection), Some(client))
                         }
@@ -530,11 +545,15 @@ impl Stream for ConnectionListener {
                 // For all other packet types, we try to forward it to the correct socket; Either
                 // the local socket if it came from the client, or the client socket if it came
                 // from the local socket.
-                _ => if let Some(connection) = self.open_connections.get(&connection_id) {
+                _ => if let Some(connection) = self.open_connections.get_mut(&connection_id) {
                     let to_address = if address == connection.local_address {
                         // Forward to the remote address.
                         connection.remote_address
                     } else if address == connection.remote_address {
+                        // We've received in incoming packet, so reset the disconnect timeout.
+                        connection.disconnect_timeout
+                            .reset(Instant::now() + Duration::from_secs(1));
+
                         // Forward to the local address.
                         connection.local_address
                     } else {
@@ -557,6 +576,17 @@ impl Stream for ConnectionListener {
                 }
             }
         }
+
+        // Poll each of the open connections for the disconnect timeout, removing any connections
+        // that have disconnected (or return an error).
+        self.open_connections.retain(|_, connection| {
+            match connection.disconnect_timeout.poll() {
+                Ok(Async::NotReady) => { true }
+                _ => { false }
+            }
+        });
+
+        Ok(Async::NotReady)
     }
 }
 
@@ -606,6 +636,10 @@ pub struct Connection {
 
     // A handle to the tokio reactor so that we can spawn things like timeouts.
     handle: Handle,
+
+    // Timeout for determining if we've disconnected from the server. Is reset every time an
+    // incoming packet is received.
+    disconnect_timeout: Timeout,
 }
 
 impl Connection {
@@ -828,22 +862,21 @@ impl<T, U: DeserializeOwned> Stream for Serialized<T, U> {
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        loop {
-            // If there is no more data ready on the socket, return a `WouldBlock` error.
+        // Check to see if the connection has timed out waiting for data. If it has, we
+        if self.connection.disconnect_timeout.poll()? == Async::Ready(()) {
+            return Ok(Async::Ready(None));
+        }
 
-            // Read the bytes off the socket.
-            let (bytes_read, address) = try_nb!(self.connection.socket.recv_from(
+        loop {
+            let packet = try_nb!(recv_packet(
+                &self.connection.socket,
+                self.connection.peer_address,
                 &mut self.connection.recv_buffer,
             ));
 
-            // Ignore nay packets that don't come from the server.
-            if address != self.connection.peer_address { continue; }
-
-            // Decode the packet, discarding it if it fails validation.
-            let packet = match decode(&self.connection.recv_buffer[.. bytes_read])? {
-                Some(packet) => { packet }
-                None => { continue; }
-            };
+            // Reset the timeout since we received a packet.
+            // TODO: Make disconnect timeout configurable.
+            self.connection.disconnect_timeout.reset(Instant::now() + Duration::from_secs(1));
 
             // Handle the packet according to its type, returning the message's data if we
             // received a message packet.
@@ -1055,6 +1088,9 @@ impl Future for ConnectionNew {
                     let socket = self.socket
                         .take()
                         .expect("Poll called after connection was established");
+
+                    // TODO: Make disconnect timeout configurable.
+                    let disconnect_timeout = Timeout::new(Duration::from_secs(1), &self.handle)?;
                     return Ok(Async::Ready(Connection {
                         socket,
                         peer_address: self.peer_address,
@@ -1066,6 +1102,8 @@ impl Future for ConnectionNew {
                         fragments: HashMap::new(),
 
                         handle: self.handle.clone(),
+
+                        disconnect_timeout,
                     }));
                 }
 
@@ -1372,12 +1410,11 @@ impl ::std::fmt::Debug for MessageFragments {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct OpenConnection {
     local_address: SocketAddr,
     remote_address: SocketAddr,
-
-    _last_received_time: Instant,
+    disconnect_timeout: Timeout,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
