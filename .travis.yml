@@ -1,30 +1,21 @@
 language: rust
 cache: cargo
-rust:
-- stable
-- beta
-- nightly
 
-matrix:
-  allow_failures:
-  - rust: nightly
-
-script:
 # TODO: Build the entire workspace once the client can be built on macOS and linux.
+script:
 - "(cd sumi && cargo test --verbose)"
 - "(cd server && cargo test --verbose)"
 
-# On the master branch, we run use `cargo install` to drop the finished binaries into
-# a single directory. We do this as part of the main script so that the release build
-# artifacts for dependencies will be included in the build cache.
-- >
-  if [ "$TRAVIS_BRANCH" = "master" ]; then
-    (cd server && cargo install --verbose --root ..)
+# NOTE: The `before_deploy` step gets run once for each deployment provider, but we only
+# need the build output generated once, so we check if the `bin` directory exists and only
+# create the build output if it doesn't.
+before_deploy:
+- |
+  if ! [ -d "bin" ]; then
+    (cd server && cargo install --verbose --force --root ..)
+    mkdir ./s3
+    zip -r ./s3/test-build-0.0.$TRAVIS_BUILD_NUMBER.zip ./bin
   fi
-
-after_success:
-- mkdir ./s3
-- zip -r ./s3/test-build-0.0.$TRAVIS_BUILD_NUMBER.zip ./bin
 
 deploy:
 - provider: s3
@@ -36,21 +27,11 @@ deploy:
   skip_cleanup: true
   on:
     repo: randomPoison/online-fps
-    condition: "$TRAVIS_RUST_VERSION = stable"
 - provider: script
-  script:
-  - pip install --user awscli
-  - >
-    aws gamelift upload-build
-      --operating-system AMAZON_LINUX
-      --build-root ./bin
-      --name "Test Build"
-      --build-version "0.0.$TRAVIS_BUILD_NUMBER"
-      --region us-east-1
+  script: sh ./scripts/gamelift-deploy.sh
   skip_cleanup: true
   on:
     repo: randomPoison/online-fps
-    condition: "$TRAVIS_RUST_VERSION = stable"
 
 env:
   global:
