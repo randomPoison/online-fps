@@ -1,0 +1,57 @@
+language: rust
+cache: cargo
+rust:
+- stable
+- beta
+- nightly
+
+matrix:
+  allow_failures:
+  - rust: nightly
+
+script:
+# TODO: Build the entire workspace once the client can be built on macOS and linux.
+- "(cd sumi && cargo test --verbose)"
+- "(cd server && cargo test --verbose)"
+
+# On the master branch, we run use `cargo install` to drop the finished binaries into
+# a single directory. We do this as part of the main script so that the release build
+# artifacts for dependencies will be included in the build cache.
+- >
+  if [ "$TRAVIS_BRANCH" = "master" ]; then
+    (cd server && cargo install --verbose --root ..)
+  fi
+
+after_success:
+- mkdir ./s3
+- zip -r ./s3/test-build-0.0.$TRAVIS_BUILD_NUMBER.zip ./bin
+
+deploy:
+- provider: s3
+  access_key_id: AKIAJTQDKSPYQJPVQF7A
+  secret_access_key:
+    secure: btKgIDkVmrYCtRwb2p5vpQsBDWcbaSuvME+pmyWxolrRQbgFqMEM8GmRKYtyQ1WywRzoH86wT1QGYjrpaW6SKTLi68l4OgPVE/mno8UkvwykITxun3VnSR+Ab/1cAtHAyxTk0XAGfhFBfdbwe4m73nh+dZmcJuKFLNGe7z37xiUQdo1jxHeG2acfSr7kjHJaHSEpRucfnf6gvM2MwNK//XCCgsnQXV96qxQpErW+hUzh+Hvx0ADh1BdNMzGwIkxAITPQppwPMA0UyKoUc3vPe4VGsmA7jQub2p93CcOQJxPuqRu1JjE1Z9/TmaKK0N+EwttP6Sh20S9xHZ2DLqVmWHZv3w8x/TWltMdpqp2xOLAYrTkwWLrCkwno2t7aljTzJ5i7k5T3aOY6sdLNsopjuTVjuNUcvLufxVIiJNF3AI4PPqc6LvaYNJp7mV6Hv96qBmd82Z7CzgyYEkSJfeeXI7u2WqzuuhmEmO59dHzrtVcKQaGQXsPPBLrnwwgZb8LCHKHhIW/GYxQpat9jGd67zNZx952rfEf39IdPzgdxPu65ckZXgawMv5rqH8VcVIdhJLp1+WknDG5lnDCNopF7IqGgEE0HEb1CqpUTs+IZlOZP48RRnhYm5WSePDFkJYDrew2ZAwkcy3Yb0t6Pc3gXS2iOpfNy796QeXssXKBzjBo=
+  bucket: glowing-palm-tree
+  local-dir: ./s3
+  skip_cleanup: true
+  on:
+    repo: randomPoison/online-fps
+    condition: "$TRAVIS_RUST_VERSION = stable"
+- provider: script
+  script:
+  - pip install --user awscli
+  - >
+    aws gamelift upload-build
+      --operating-system AMAZON_LINUX
+      --build-root ./bin
+      --name "Test Build"
+      --build-version "0.0.$TRAVIS_BUILD_NUMBER"
+      --region us-east-1
+  skip_cleanup: true
+  on:
+    repo: randomPoison/online-fps
+    condition: "$TRAVIS_RUST_VERSION = stable"
+
+env:
+  global:
+    secure: c3hyL9Q2vhqVogjw06XvEgQMU1/VrgAnf3bn4JI3aW8LhBnSXUxCQiLax/IPWrtfVA0o2mnxz3RWfIhlZ5wmsvnu0Pom6jziE7dX1NXVlfw8q7ZYYjEMADJ0x8HVrmEsF77KZ58aSlOtAEnbXTmwRSyUAmiGx6qnhqAV4YvnrelO1V0Cqjs8xgF0jV5Jh0B9KQzdKl1MyE088fWlAJ+qdpVmfik71yObNfiqkdmLEvSGvys+yHdYCLPOuRxBgcb6hxOJWH6chZjPv0HrAEFNi1HW6+qqaV2GLvkN9FcInI1E2iExIYvkMUDWMf5nIGyuBZ+vYlE5iZIdEJsOQ3QgFJf2gqwS09l4m67o2AIP14Wwmz4QH7K/7Mx7kdKyQR9AjOsAW7garzb8/bZZVNURMY54QZJoLBqba8Ws7byC/pq5e/i0+jGJuA2zVRLMWuVIX6eTKpU1YNqsdryL3EHu/rhQH+V4+3zDRwV/F/j5FTLOmxJs5t15vpM09U0jem9SdPXXRpGUbVf0pQQrNEL1sEwdyQ7MipEi6X7dsty80DTxBmB6uAPIPOOkPU/syASIek4sfNyhArd4/HxwEQYtMoFBSERk8F4taHvPryT57RD7R9NylG6BGEWjcSDgR1eI8YxqsqYY6ioXGwEdxHU/8flX2+43Bcw+3KqyhzpqOaQ=
