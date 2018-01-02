@@ -6,10 +6,8 @@ authors = ["David LeGare <excaliburhissheath@gmail.com>"]
 [dependencies]
 core = { path = "../core" }
 futures = "0.1"
-gl-winit = { git = "https://github.com/randomPoison/polygon" }
 log = "0.4"
 log4rs = { version = "0.8", features = ["toml_format"] }
-polygon = { git = "https://github.com/randomPoison/polygon" }
 sumi = { path = "../sumi" }
+three = { git = "https://github.com/three-rs/three", rev = "1cb4d94" }
 tokio-core = "0.1"
-winit = "0.7"

@@ -4,16 +4,15 @@ extern crate futures_cpupool;
 #[macro_use]
 extern crate log;
 extern crate log4rs;
-extern crate polygon_math as math;
 extern crate rand;
 extern crate sumi;
 extern crate tokio_core;
 
 use core::*;
+use core::math::{Euler, Point3, Rad};
 use futures::{Async, Future, Sink, Stream};
 use futures::executor;
 use futures::sync::mpsc;
-use math::{Point, Orientation};
 use std::io;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -94,8 +93,8 @@ fn main() {
                     info!("New player joined and was assigned ID {:#x}", id);
 
                     let player = Player {
-                        position: Point::origin(),
-                        orientation: Orientation::new(),
+                        position: Point3::new(0.0, 0.0, 0.0),
+                        orientation: Euler::new(Rad(0.0), Rad(0.0), Rad(0.0)).into(),
                     };
 
                     // Add the player to the world.

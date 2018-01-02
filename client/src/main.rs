@@ -1,61 +1,31 @@
 extern crate core;
 extern crate futures;
-extern crate gl_winit;
 #[macro_use]
 extern crate log;
 extern crate log4rs;
-extern crate polygon;
 extern crate sumi;
+extern crate three;
 extern crate tokio_core;
-extern crate winit;
 
 use core::*;
-use gl_winit::CreateContext;
 use std::collections::{HashMap, VecDeque};
-use std::time::{Duration, Instant};
 use futures::prelude::*;
 use futures::sync::mpsc;
 use futures::sync::oneshot;
 use futures::executor;
-use polygon::{GpuMesh, Renderer};
-use polygon::anchor::{Anchor, AnchorId};
-use polygon::camera::Camera;
-use polygon::geometry::mesh::MeshBuilder;
-use polygon::gl::GlRender;
-use polygon::math::{Color, Orientation, Point, Vector3};
-use polygon::mesh_instance::{MeshInstance, MeshInstanceId};
 use std::io;
 use std::thread;
 use sumi::Connection;
+use three::{Button, Key, Object};
 use tokio_core::reactor::Core;
-use winit::*;
-
-const W_SCAN: u32 = 0x11;
-const A_SCAN: u32 = 0x1e;
-const S_SCAN: u32 = 0x1f;
-const D_SCAN: u32 = 0x20;
-
-static VERTEX_POSITIONS: [f32; 12] = [
-    -1.0, -1.0, 0.0, 1.0,
-     1.0, -1.0, 0.0, 1.0,
-     0.0,  1.0, 0.0, 1.0,
-];
-static INDICES: [u32; 3] = [0, 1, 2];
 
 fn main() {
     // Initialize logging first so that we can start capturing logs immediately.
     log4rs::init_file("../log4rs.toml", Default::default()).expect("Failed to init log4rs");
 
     // Open a window.
-    let mut events_loop = EventsLoop::new();
-    let window = WindowBuilder::new()
-        .with_dimensions(800, 800)
-        .build(&events_loop)
-        .expect("Failed to open window");
-
-    // Create the OpenGL context and the renderer.
-    let context = window.create_context().expect("Failed to create GL context");
-    let mut renderer = GlRender::new(context).expect("Failed to create GL renderer");
+    let mut window = three::Window::new("online-fps client");
+    window.scene.background = three::Background::Color(0xC6F0FF);
 
     // Create the event loop that will drive network communication.
     let (sender, receiver) = oneshot::channel();
@@ -139,71 +109,36 @@ fn main() {
     // Setup the camera and mesh data for the renderer.
     // ================================================
 
-    // Create a camera and an anchor for it.
-    let mut camera_anchor = Anchor::new();
-    camera_anchor.set_position(Point::new(0.0, 10.0, 0.0));
-    camera_anchor.set_orientation(Orientation::look_rotation(Vector3::DOWN, Vector3::FORWARD));
-    let camera_anchor_id = renderer.register_anchor(camera_anchor);
+    // Create the camera.
+    let mut camera = window.factory.perspective_camera(60.0, 0.1 .. 100.0);
+    camera.set_position([0.0, 10.0, 0.0]);
+    camera.look_at(
+        [0.0, 10.0, 0.0],
+        [0.0, 0.0, 0.0],
+        Some([0.0, 0.0, -1.0].into()),
+    );
 
-    let mut camera = Camera::default();
-    camera.set_anchor(camera_anchor_id);
-    renderer.register_camera(camera);
+    // Build a box mesh.
+    let geometry = three::Geometry::cuboid(1.0, 1.0, 1.0);
 
-    // Set ambient color to pure white so we don't need to worry about lighting.
-    renderer.set_ambient_light(Color::rgb(1.0, 1.0, 1.0));
-
-    // Build a triangle mesh.
-    let mesh = MeshBuilder::new()
-        .set_position_data(Point::slice_from_f32_slice(&VERTEX_POSITIONS))
-        .set_indices(&INDICES)
-        .build()
-        .unwrap();
-
-    // Send the mesh to the GPU.
-    let gpu_mesh = renderer.register_mesh(&mesh);
+    // Create a default material for the objects in the scene.
+    let material = three::material::Basic {
+        color: 0xFFFF00,
+        .. Default::default()
+    };
 
     // Run the main loop of the game.
     // ==============================
 
-    let target_frame_time = Duration::from_secs(1) / 60;
-    let delta = 1.0 / 60.0;
     let mut frame_count = 0;
-    let mut frame_start = Instant::now() + target_frame_time;
-    loop {
+    while window.update() {
         frame_count += 1;
 
-        // Eat any window events to determine if the window has closed.
-        let mut window_open = true;
-        events_loop.poll_events(|event| {
-            match event {
-                Event::WindowEvent { event: WindowEvent::Closed, .. } => {
-                    window_open = false;
-                }
-
-                Event::WindowEvent { event: WindowEvent::KeyboardInput { input, .. }, .. } => {
-                    match (input.scancode, input.state) {
-                        (W_SCAN, ElementState::Pressed) => { input_state.up = true; }
-                        (W_SCAN, ElementState::Released) => { input_state.up = false; }
-
-                        (A_SCAN, ElementState::Pressed) => { input_state.left = true; }
-                        (A_SCAN, ElementState::Released) => { input_state.left = false; }
-
-                        (S_SCAN, ElementState::Pressed) => { input_state.down = true; }
-                        (S_SCAN, ElementState::Released) => { input_state.down = false; }
-
-                        (D_SCAN, ElementState::Pressed) => { input_state.right = true; }
-                        (D_SCAN, ElementState::Released) => { input_state.right = false; }
-
-                        _ => {}
-                    }
-                }
-
-                _ => {}
-            }
-        });
-
-        // Don't run the rest of the frame if the window has closed.
-        if !window_open { break; }
+        // Check input for the current frame.
+        input_state.up = window.input.hit(Button::Key(Key::W));
+        input_state.left = window.input.hit(Button::Key(Key::A));
+        input_state.down = window.input.hit(Button::Key(Key::S));
+        input_state.right = window.input.hit(Button::Key(Key::D));
 
         match game_state.take() {
             Some(mut state) => {
@@ -250,8 +185,9 @@ fn main() {
 
                             // Create renderer resources for the new player.
                             let render_state = create_player_render(
-                                &mut renderer,
-                                gpu_mesh,
+                                &mut window,
+                                geometry.clone(),
+                                material.clone(),
                                 &player,
                             );
                             trace!("Created render state for player {:#x}: {:?}", id, render_state);
@@ -265,13 +201,7 @@ fn main() {
                             debug!("Player left: {:#x}", id);
 
                             state.local_world.players.remove(&id);
-
-                            // Remove the render state for the player that left.
-                            let render_state = state.render_state
-                                .remove(&id)
-                                .expect("No render state for player");
-                            renderer.remove_mesh_instance(render_state.mesh_instance);
-                            renderer.remove_anchor(render_state.anchor);
+                            state.render_state.remove(&id);
                         }
 
                         ServerMessageBody::Init { .. } => {}
@@ -302,7 +232,7 @@ fn main() {
                         .get_mut(&state.id)
                         .expect("Couldn't find player in local state");
                     for &(_, ref input) in &state.input_history {
-                        player.step(input, delta);
+                        player.step(input, window.input.delta_time());
                     }
 
                     // TODO: Simulate forward for the other players.
@@ -316,22 +246,20 @@ fn main() {
                     let &(_, ref input) = state.input_history
                         .back()
                         .expect("Input history is empty");
-                    player.step(input, delta);
+                    player.step(input, window.input.delta_time());
                 }
 
                 // Update the render state for all players.
                 for (id, player) in &state.local_world.players {
-                    if let Some(render_state) = state.render_state.get(&id) {
+                    if let Some(render_state) = state.render_state.get_mut(&id) {
                         trace!(
                             "Updating render state for player {:?}, local state: {:?}, render state: {:?}",
                             id,
                             player,
                             render_state,
                         );
-                        let anchor = renderer.get_anchor_mut(render_state.anchor)
-                            .expect("No anchor for player in the renderer");
-                        anchor.set_position(player.position);
-                        anchor.set_orientation(player.orientation);
+                        render_state.mesh.set_position(player.position);
+                        render_state.mesh.set_orientation(player.orientation);
                     } else {
                         warn!("Player {:?} is in local state but has no render state", id);
                     }
@@ -353,7 +281,12 @@ fn main() {
                     let mut render_state = HashMap::new();
 
                     for (id, player) in &world.players {
-                        let player_render = create_player_render(&mut renderer, gpu_mesh, player);
+                        let player_render = create_player_render(
+                            &mut window,
+                            geometry.clone(),
+                            material.clone(),
+                            &player,
+                        );
                         render_state.insert(*id, player_render);
                     }
 
@@ -376,18 +309,7 @@ fn main() {
         }
 
         // Render the mesh.
-        renderer.draw();
-
-        // Determine the next frame's start time, dropping frames if we missed the frame time.
-        while frame_start < Instant::now() {
-            frame_start += target_frame_time;
-        }
-
-        // Now wait until we've returned to the frame cadence before beginning the next frame.
-        while Instant::now() < frame_start {
-            // TODO: Can we sleep with more accuracy?
-            thread::sleep(Duration::from_millis(1));
-        }
+        window.render(&camera);
     }
 }
 
@@ -430,32 +352,21 @@ struct GameState {
 
 #[derive(Debug)]
 struct RenderState {
-    anchor: AnchorId,
-    mesh_instance: MeshInstanceId,
+    mesh: three::Mesh,
 }
 
-/// Creates the renderer resources for a player, using the provided mesh.
-///
-/// Returns the anchor ID for the player.
-fn create_player_render(renderer: &mut GlRender, mesh: GpuMesh, player: &Player) -> RenderState {
-    // Create an anchor and register it with the renderer.
-    let mut anchor = Anchor::new();
-    anchor.set_position(player.position);
-    anchor.set_orientation(player.orientation);
-
-    let anchor_id = renderer.register_anchor(anchor);
-
-    // Setup the material for the mesh.
-    let mut material = renderer.default_material();
-    material.set_color("surface_color", Color::rgb(1.0, 0.0, 0.0));
-
-    // Create a mesh instance, attach it to the anchor, and register it.
-    let mut mesh_instance = MeshInstance::with_owned_material(mesh, material);
-    mesh_instance.set_anchor(anchor_id);
-    let instance_id = renderer.register_mesh_instance(mesh_instance);
+fn create_player_render<M: Into<three::Material>>(
+    window: &mut three::Window,
+    geometry: three::Geometry,
+    material: M,
+    player: &Player,
+) -> RenderState {
+    let mut mesh = window.factory.mesh(geometry, material);
+    mesh.set_parent(&window.scene);
+    mesh.set_position(player.position);
+    mesh.set_orientation(player.orientation);
 
     RenderState {
-        anchor: anchor_id,
-        mesh_instance: instance_id,
+        mesh,
     }
 }

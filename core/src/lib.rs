@@ -1,16 +1,20 @@
+extern crate cgmath;
 extern crate futures;
-extern crate polygon_math as math;
 extern crate rand;
-extern crate serde;
 #[macro_use]
-extern crate serde_derive;
+extern crate serde;
 
+use cgmath::*;
 use futures::{Async, Stream};
 use futures::executor::{Notify, Spawn};
-use math::*;
 use std::collections::HashMap;
 use std::str;
 use std::sync::Arc;
+
+/// Re-exports math types.
+pub mod math {
+    pub use cgmath::*;
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct World {
@@ -28,8 +32,8 @@ impl World {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
-    pub position: Point,
-    pub orientation: Orientation,
+    pub position: Point3<f32>,
+    pub orientation: Quaternion<f32>,
 }
 
 impl Player {
@@ -37,13 +41,16 @@ impl Player {
     ///
     /// `delta` is in seconds.
     pub fn step(&mut self, input: &InputState, delta: f32) {
-        let mut direction = Vector3::default();
+        let mut direction = Vector3::new(0.0, 0.0, 0.0);
         if input.up { direction += Vector3::new(0.0, 0.0, -1.0); }
         if input.down { direction += Vector3::new(0.0, 0.0, 1.0); }
         if input.left { direction += Vector3::new(-1.0, 0.0, 0.0); }
         if input.right { direction += Vector3::new(1.0, 0.0, 0.0); }
 
         // Move the player based on the movement direction.
+        if direction.magnitude2() > 0.0 {
+            direction = direction.normalize();
+        }
         self.position += direction * delta;
     }
 }

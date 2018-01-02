@@ -4,8 +4,7 @@ version = "0.1.0"
 authors = ["David LeGare <excaliburhissheath@gmail.com>"]
 
 [dependencies]
+cgmath = { version = "0.15", features = ["mint", "serde"] }
 futures = "0.1"
-polygon-math = { git = "https://github.com/randomPoison/polygon", features = ["serde-impls"] }
 rand = "0.3"
-serde = "1.0"
-serde_derive = "1.0"
+serde = { version = "1.0", features = ["derive"] }

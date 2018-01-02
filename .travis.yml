@@ -1,10 +1,11 @@
 language: rust
 cache: cargo
 
-# TODO: Build the entire workspace once the client can be built on macOS and linux.
-script:
-- "(cd sumi && cargo test --verbose)"
-- "(cd server && cargo test --verbose)"
+# Install ALSA development libraries before compiling on Linux.
+addons:
+  apt:
+    packages:
+        - libasound2-dev
 
 # NOTE: The `before_deploy` step gets run once for each deployment provider, but we only
 # need the build output generated once, so we check if the `bin` directory exists and only

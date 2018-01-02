@@ -5,6 +5,3 @@ members = [
     "server/",
     "sumi/",
 ]
-
-[profile.dev]
-panic = "abort"
