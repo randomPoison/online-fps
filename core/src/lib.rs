@@ -4,16 +4,38 @@ extern crate rand;
 #[macro_use]
 extern crate serde;
 
-use cgmath::*;
 use futures::{Async, Stream};
 use futures::executor::{Notify, Spawn};
 use std::collections::HashMap;
 use std::str;
 use std::sync::Arc;
 
+use math::*;
+
 /// Re-exports math types.
 pub mod math {
     pub use cgmath::*;
+    pub use std::f32::consts::PI;
+
+    pub const TAU: f32 = ::std::f32::consts::PI * 2.0;
+
+    pub trait Clamp {
+        fn clamp(self, min: Self, max: Self) -> Self;
+    }
+
+    impl Clamp for f32 {
+        fn clamp(self, min: Self, max: Self) -> Self {
+            if self < min { return min; } else if self > max { return max; }
+            self
+        }
+    }
+
+    impl Clamp for f64 {
+        fn clamp(self, min: Self, max: Self) -> Self {
+            if self < min { return min; } else if self > max { return max; }
+            self
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,34 +55,73 @@ impl World {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub position: Point3<f32>,
-    pub orientation: Quaternion<f32>,
+
+    /// The player's current yaw.
+    ///
+    /// Yaw has a range of [0, tau), where 0 indicates that the player is facing forward along the
+    /// negative Z axis. Yaw increases towards tau as the player turns counter-clockwise.
+    pub yaw: f32,
+
+    /// Pitch has a range of [-pi, pi], where 0 indicates that the player is looking horizontally
+    /// towards the horizon, -pi indicates that the player is looking down along the negative Y
+    /// axis, and pi indicates that the player is looking up along the positive Y axis.
+    pub pitch: f32,
 }
 
 impl Player {
     /// Performs a single frame step for the player based on it inputs.
     ///
     /// `delta` is in seconds.
-    pub fn step(&mut self, input: &InputState, delta: f32) {
-        let mut direction = Vector3::new(0.0, 0.0, 0.0);
-        if input.up { direction += Vector3::new(0.0, 0.0, -1.0); }
-        if input.down { direction += Vector3::new(0.0, 0.0, 1.0); }
-        if input.left { direction += Vector3::new(-1.0, 0.0, 0.0); }
-        if input.right { direction += Vector3::new(1.0, 0.0, 0.0); }
+    pub fn step(&mut self, input: &InputFrame, delta: f32) {
+        // Apply input to orientation.
+        self.yaw += input.yaw_delta;
 
-        // Move the player based on the movement direction.
-        if direction.magnitude2() > 0.0 {
-            direction = direction.normalize();
-        }
-        self.position += direction * delta;
+        self.pitch = (self.pitch - input.pitch_delta).clamp(-PI, PI);
+
+        // Determine the forward and right vectors based on the current yaw.
+        let orientation = Basis3::from(self.yaw_orientation());
+        let forward = orientation.rotate_vector(Vector3::new(0.0, 0.0, -1.0));
+        let right = orientation.rotate_vector(Vector3::new(1.0, 0.0, 0.0));
+
+        // Convert the 2D input into a 3D movement vector.
+        let velocity = forward * input.movement_dir.y + right * input.movement_dir.x;
+
+        self.position += velocity * delta;
+    }
+
+    pub fn orientation(&self) -> Quaternion<f32> {
+        let yaw_rot = Quaternion::from(Euler::new(Rad(0.0), Rad(self.yaw), Rad(0.0)));
+        let pitch_rot = Quaternion::from(Euler::new(Rad(self.pitch), Rad(0.0), Rad(0.0)));
+        yaw_rot * pitch_rot
+    }
+
+    pub fn yaw_orientation(&self) -> Euler<Rad<f32>> {
+        Euler::new(Rad(0.0), Rad(self.yaw), Rad(0.0))
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-pub struct InputState {
-    pub up: bool,
-    pub down: bool,
-    pub left: bool,
-    pub right: bool,
+/// Represents the input received on a single frame of the game.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct InputFrame {
+    /// Movement input is given as a 2D vector, where up on the input is the positive Y axis, and
+    /// right on the input is the positive X axis.
+    pub movement_dir: Vector2<f32>,
+
+    /// The change in yaw for the current frame, in radians.
+    pub yaw_delta: f32,
+
+    /// The change in pitch for the current frame, in radians.
+    pub pitch_delta: f32,
+}
+
+impl Default for InputFrame {
+    fn default() -> Self {
+        InputFrame {
+            movement_dir: Vector2::new(0.0, 0.0),
+            yaw_delta: 0.0,
+            pitch_delta: 0.0,
+        }
+    }
 }
 
 /// Provides an iterator yielding the currently ready items from a `Stream`.
@@ -167,5 +228,5 @@ pub struct ClientMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessageBody {
-    Input(InputState),
+    Input(InputFrame),
 }

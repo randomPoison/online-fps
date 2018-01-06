@@ -9,7 +9,7 @@ extern crate sumi;
 extern crate tokio_core;
 
 use core::*;
-use core::math::{Euler, Point3, Rad};
+use core::math::*;
 use futures::{Async, Future, Sink, Stream};
 use futures::executor;
 use futures::sync::mpsc;
@@ -94,7 +94,8 @@ fn main() {
 
                     let player = Player {
                         position: Point3::new(0.0, 0.0, 0.0),
-                        orientation: Euler::new(Rad(0.0), Rad(0.0), Rad(0.0)).into(),
+                        yaw: 0.0,
+                        pitch: 0.0,
                     };
 
                     // Add the player to the world.
@@ -128,7 +129,7 @@ fn main() {
                         connected: true,
 
                         id,
-                        input: InputState::default(),
+                        input: InputFrame::default(),
 
                         latest_frame: 0,
                     });
@@ -241,7 +242,7 @@ struct Client {
     connected: bool,
 
     id: u64,
-    input: InputState,
+    input: InputFrame,
 
     /// The most recent frame of input that the client sent.
     ///

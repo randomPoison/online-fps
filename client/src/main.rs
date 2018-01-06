@@ -8,6 +8,7 @@ extern crate three;
 extern crate tokio_core;
 
 use core::*;
+use core::math::*;
 use std::collections::{HashMap, VecDeque};
 use futures::prelude::*;
 use futures::sync::mpsc;
@@ -104,19 +105,18 @@ fn main() {
 
     // Game state variables.
     let mut game_state: Option<GameState> = None;
-    let mut input_state = InputState::default();
+    let mut input_state;
 
     // Setup the camera and mesh data for the renderer.
     // ================================================
 
     // Create the camera.
     let mut camera = window.factory.perspective_camera(60.0, 0.1 .. 100.0);
-    camera.set_position([0.0, 10.0, 0.0]);
-    camera.look_at(
-        [0.0, 10.0, 0.0],
-        [0.0, 0.0, 0.0],
-        Some([0.0, 0.0, -1.0].into()),
-    );
+    camera.set_orientation(Quaternion::look_at(Vector3::new(0.0, 0.0, 1.0), Vector3::new(0.0, 1.0, 0.0)));
+
+    // Load the revolver model and add it to the scene.
+    let mut revolver_source = window.factory.load_gltf("../assets/revolver/revolver-python.gltf");
+    revolver_source.group.set_parent(&window.scene);
 
     // Build a box mesh.
     let geometry = three::Geometry::cuboid(1.0, 1.0, 1.0);
@@ -135,10 +135,30 @@ fn main() {
         frame_count += 1;
 
         // Check input for the current frame.
-        input_state.up = window.input.hit(Button::Key(Key::W));
-        input_state.left = window.input.hit(Button::Key(Key::A));
-        input_state.down = window.input.hit(Button::Key(Key::S));
-        input_state.right = window.input.hit(Button::Key(Key::D));
+        // ==================================
+
+        // Reset the input state each frame.
+        input_state = InputFrame::default();
+
+        // Get movement input based on WASD keys.
+        input_state.movement_dir = {
+            let mut direction = Vector2::new(0.0, 0.0);
+            if window.input.hit(Button::Key(Key::W)) { direction += Vector2::new(0.0, 1.0); }
+            if window.input.hit(Button::Key(Key::S)) { direction += Vector2::new(0.0, -1.0); }
+            if window.input.hit(Button::Key(Key::A)) { direction += Vector2::new(-1.0, 0.0); }
+            if window.input.hit(Button::Key(Key::D)) { direction += Vector2::new(1.0, 0.0); }
+
+            if direction.magnitude2() > 0.0 {
+                direction = direction.normalize();
+            }
+
+            direction
+        };
+
+        // TODO: Check for mouse input.
+        let mouse_delta = window.input.mouse_delta();
+        input_state.yaw_delta = -mouse_delta.x * TAU * 0.001;
+        input_state.pitch_delta = mouse_delta.y * TAU * 0.001;
 
         match game_state.take() {
             Some(mut state) => {
@@ -249,8 +269,18 @@ fn main() {
                     player.step(input, window.input.delta_time());
                 }
 
+                // Update the render state for the local player.
+                if let Some(player) = state.local_world.players.get(&state.id) {
+                    camera.set_position(player.position);
+
+                    // TODO: Update the player's orientation to match the pitch and yaw.
+                    camera.set_orientation(player.orientation());
+                } else {
+                    warn!("Local player wasn't in local state???");
+                }
+
                 // Update the render state for all players.
-                for (id, player) in &state.local_world.players {
+                for (&id, player) in &state.local_world.players {
                     if let Some(render_state) = state.render_state.get_mut(&id) {
                         trace!(
                             "Updating render state for player {:?}, local state: {:?}, render state: {:?}",
@@ -259,8 +289,8 @@ fn main() {
                             render_state,
                         );
                         render_state.mesh.set_position(player.position);
-                        render_state.mesh.set_orientation(player.orientation);
-                    } else {
+                        // TODO: Update the player's orientation to match the pitch and yaw.
+                    } else if id != state.id {
                         warn!("Player {:?} is in local state but has no render state", id);
                     }
                 }
@@ -278,24 +308,12 @@ fn main() {
                     // Create a player avatar in the scene with the player information.
                     // ================================================================
 
-                    let mut render_state = HashMap::new();
-
-                    for (id, player) in &world.players {
-                        let player_render = create_player_render(
-                            &mut window,
-                            geometry.clone(),
-                            material.clone(),
-                            &player,
-                        );
-                        render_state.insert(*id, player_render);
-                    }
-
                     game_state = Some(GameState {
                         id,
                         sender,
                         receiver,
 
-                        render_state,
+                        render_state: HashMap::new(),
 
                         input_history: VecDeque::new(),
                         local_world: world.clone(),
@@ -327,7 +345,7 @@ struct GameState {
     /// A queue tracking the most recent frames of input.
     ///
     /// Used to replay input locally on top of server state to compensate for latency.
-    input_history: VecDeque<(usize, InputState)>,
+    input_history: VecDeque<(usize, InputFrame)>,
 
     /// The local world state, derived by simulating forward from the most recent server state.
     local_world: World,
@@ -352,6 +370,7 @@ struct GameState {
 
 #[derive(Debug)]
 struct RenderState {
+    group: three::Group,
     mesh: three::Mesh,
 }
 
@@ -361,12 +380,16 @@ fn create_player_render<M: Into<three::Material>>(
     material: M,
     player: &Player,
 ) -> RenderState {
+    let mut group = window.factory.group();
+    group.set_parent(&window.scene);
+
     let mut mesh = window.factory.mesh(geometry, material);
-    mesh.set_parent(&window.scene);
+    mesh.set_parent(&group);
     mesh.set_position(player.position);
-    mesh.set_orientation(player.orientation);
+    // TODO: Set the player's orientation to match the current pitch and yaw.
 
     RenderState {
+        group,
         mesh,
     }
 }
