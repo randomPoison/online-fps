@@ -66,6 +66,9 @@ pub struct Player {
     /// towards the horizon, -pi indicates that the player is looking down along the negative Y
     /// axis, and pi indicates that the player is looking up along the positive Y axis.
     pub pitch: f32,
+
+    /// The current state of the player's gun.
+    pub gun: Revolver,
 }
 
 impl Player {
@@ -209,7 +212,19 @@ pub enum ServerMessageBody {
     /// A player left the game, and should be removed from the scene.
     PlayerLeft {
         id: u64,
-    }
+    },
+
+    /// A player's gun changed state.
+    RevolverTransition {
+        /// The unique ID for the player who's gun changed state.
+        id: u64,
+
+        /// The new state for the player's gun.
+        state: Revolver,
+
+        /// The transition that occurred.
+        transition: RevolverTransition,
+    },
 }
 
 /// A message sent from the client to the server.
@@ -229,4 +244,70 @@ pub struct ClientMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessageBody {
     Input(InputFrame),
+    RevolverAction(RevolverAction),
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Revolver {
+    pub is_hammer_cocked: bool,
+
+    /// Indicates which of the slots in the cyndler is in the top position.
+    pub cylinder_position: usize,
+
+    /// The 6 cartidge positions in the cylinder.
+    ///
+    /// Each slot can be empty, loaded with a fresh cartridge, or loaded with an empty cartridge.
+    pub cartridges: [Cartridge; 6],
+}
+
+impl Revolver {
+    /// Rotates the cylinder to the next position.
+    pub fn rotate_cylinder(&mut self) {
+        self.cylinder_position = (self.cylinder_position + 1) % 6;
+    }
+
+    /// Returns the state of the currently active cartridge (according to `cylinder_position`).
+    pub fn current_cartridge(&self) -> Cartridge {
+        self.cartridges[self.cylinder_position]
+    }
+
+    /// Sets the state of the currently active cartridge, returning the previous state.
+    pub fn set_current_cartridge(&mut self, cartridge: Cartridge) -> Cartridge {
+        let old = self.cartridges[self.cylinder_position];
+        self.cartridges[self.cylinder_position] = cartridge;
+        old
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Cartridge {
+    Empty,
+    Fresh,
+    Spent,
+}
+
+impl Default for Cartridge {
+    fn default() -> Self { Cartridge::Empty }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RevolverAction {
+    PullHammer,
+    PullTrigger,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RevolverTransition {
+    /// The revolver's hammer was cocked.
+    HammerCocked,
+
+    /// The trigger was pulled when the hammer was cocked and the hammer fell, but the current
+    /// cartridge was empty or spent, and so no bullet was fired.
+    HammerFell,
+
+    /// The trigger was pulled and the revolver fired a bullet.
+    Fired {
+        /// The ID for the bullet that was spawned when the gun was fired.
+        bullet_id: u64,
+    }
 }

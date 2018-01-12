@@ -17,7 +17,7 @@ use futures::executor;
 use std::io;
 use std::thread;
 use sumi::Connection;
-use three::{Button, Key, Object};
+use three::{Key, MouseButton, Object};
 use tokio_core::reactor::Core;
 
 fn main() {
@@ -93,6 +93,7 @@ fn main() {
                     ServerMessageBody::WorldUpdate(..)
                     | ServerMessageBody::PlayerJoined { .. }
                     | ServerMessageBody::PlayerLeft { .. }
+                    | ServerMessageBody::RevolverTransition { .. }
                     => { panic!("Got the wrong message"); }
                 }
             })
@@ -110,13 +111,25 @@ fn main() {
     // Setup the camera and mesh data for the renderer.
     // ================================================
 
+    // Create a group for all of the player's parts.
+    let player_group = window.factory.group();
+    window.scene.add(&player_group);
+
     // Create the camera.
-    let mut camera = window.factory.perspective_camera(60.0, 0.1 .. 100.0);
+    let camera = window.factory.perspective_camera(60.0, 0.1 .. 100.0);
     camera.set_orientation(Quaternion::look_at(Vector3::new(0.0, 0.0, 1.0), Vector3::new(0.0, 1.0, 0.0)));
+    player_group.add(&camera);
 
     // Load the revolver model and add it to the scene.
-    let mut revolver_source = window.factory.load_gltf("../assets/revolver/revolver-python.gltf");
-    revolver_source.group.set_parent(&window.scene);
+    let revolver_source = window.factory.load_gltf("../assets/revolver/revolver-python.gltf");
+    player_group.add(&revolver_source.group);
+
+    // Retreive the mesh for the cylinder, so that we can manipulate it.
+    // TODO: We can look at the glTF source for the revolver and see that mesh 0 is the cylinder,
+    // but how do we handle the list of meshes that could be associated with it? Right now we know
+    // that there's only 1, but that could change.
+    let cylinder_mesh = revolver_source.meshes[2][0].clone();
+    let hammer_mesh = revolver_source.meshes[0][0].clone();
 
     // Build a box mesh.
     let geometry = three::Geometry::cuboid(1.0, 1.0, 1.0);
@@ -134,34 +147,57 @@ fn main() {
     while window.update() {
         frame_count += 1;
 
-        // Check input for the current frame.
-        // ==================================
-
-        // Reset the input state each frame.
-        input_state = InputFrame::default();
-
-        // Get movement input based on WASD keys.
-        input_state.movement_dir = {
-            let mut direction = Vector2::new(0.0, 0.0);
-            if window.input.hit(Button::Key(Key::W)) { direction += Vector2::new(0.0, 1.0); }
-            if window.input.hit(Button::Key(Key::S)) { direction += Vector2::new(0.0, -1.0); }
-            if window.input.hit(Button::Key(Key::A)) { direction += Vector2::new(-1.0, 0.0); }
-            if window.input.hit(Button::Key(Key::D)) { direction += Vector2::new(1.0, 0.0); }
-
-            if direction.magnitude2() > 0.0 {
-                direction = direction.normalize();
-            }
-
-            direction
-        };
-
-        // TODO: Check for mouse input.
-        let mouse_delta = window.input.mouse_delta();
-        input_state.yaw_delta = -mouse_delta.x * TAU * 0.001;
-        input_state.pitch_delta = mouse_delta.y * TAU * 0.001;
-
         match game_state.take() {
             Some(mut state) => {
+                // Check input for the current frame.
+                // ==================================
+
+                // Reset the input state each frame.
+                input_state = InputFrame::default();
+
+                // Get movement input based on WASD keys.
+                input_state.movement_dir = {
+                    let mut direction = Vector2::new(0.0, 0.0);
+                    if window.input.hit(Key::W) { direction += Vector2::new(0.0, 1.0); }
+                    if window.input.hit(Key::S) { direction += Vector2::new(0.0, -1.0); }
+                    if window.input.hit(Key::A) { direction += Vector2::new(-1.0, 0.0); }
+                    if window.input.hit(Key::D) { direction += Vector2::new(1.0, 0.0); }
+
+                    if direction.magnitude2() > 0.0 {
+                        direction = direction.normalize();
+                    }
+
+                    direction
+                };
+
+                // Check for gun manipulation commands.
+                if window.input.hit(MouseButton::Left) {
+                    // Send the current input state to the server.
+                    let message = ClientMessage {
+                        frame: frame_count,
+                        body: ClientMessageBody::RevolverAction(RevolverAction::PullTrigger),
+                    };
+
+                    // TODO: This should be a send-reliable.
+                    state.sender.start_send(message).expect("Failed to start send");
+                }
+
+                if window.input.hit(MouseButton::Right) {
+                    // Send the current input state to the server.
+                    let message = ClientMessage {
+                        frame: frame_count,
+                        body: ClientMessageBody::RevolverAction(RevolverAction::PullHammer),
+                    };
+
+                    // TODO: This should be a send-reliable.
+                    state.sender.start_send(message).expect("Failed to start send");
+                }
+
+                // Get input from mouse movement.
+                let mouse_delta = window.input.mouse_delta();
+                input_state.yaw_delta = -mouse_delta.x * TAU * 0.001;
+                input_state.pitch_delta = mouse_delta.y * TAU * 0.001;
+
                 // Push the current input state into the frame history.
                 state.input_history.push_back((frame_count, input_state));
 
@@ -224,6 +260,49 @@ fn main() {
                             state.render_state.remove(&id);
                         }
 
+                        ServerMessageBody::RevolverTransition { id, state: gun, transition } => {
+                            if id == state.id {
+                                match transition {
+                                    RevolverTransition::HammerCocked => {
+                                        // Update the orientation of the hammer to do the thing.
+                                        hammer_mesh.set_orientation(Quaternion::from(Euler::new(
+                                            Rad(PI / 6.0),
+                                            Rad(0.0),
+                                            Rad(0.0),
+                                        )));
+
+                                        // Update the orientation of the cylinder, based on its
+                                        // current position.
+                                        cylinder_mesh.set_orientation(Quaternion::from(Euler::new(
+                                            Rad(0.0),
+                                            Rad(0.0),
+                                            Rad(TAU / 6.0 * gun.cylinder_position as f32),
+                                        )));
+                                    }
+
+                                    RevolverTransition::HammerFell => {
+                                        // Update the orientation of the hammer to do the thing.
+                                        hammer_mesh.set_orientation(Quaternion::from(Euler::new(
+                                            Rad(0.0),
+                                            Rad(0.0),
+                                            Rad(0.0),
+                                        )));
+                                    }
+
+                                    RevolverTransition::Fired { bullet_id } => {
+                                        // Update the orientation of the hammer to do the thing.
+                                        hammer_mesh.set_orientation(Quaternion::from(Euler::new(
+                                            Rad(0.0),
+                                            Rad(0.0),
+                                            Rad(0.0),
+                                        )));
+
+                                        // TODO: Create a bullet.
+                                    }
+                                }
+                            }
+                        }
+
                         ServerMessageBody::Init { .. } => {}
                     }
 
@@ -271,10 +350,10 @@ fn main() {
 
                 // Update the render state for the local player.
                 if let Some(player) = state.local_world.players.get(&state.id) {
-                    camera.set_position(player.position);
+                    player_group.set_position(player.position);
 
                     // TODO: Update the player's orientation to match the pitch and yaw.
-                    camera.set_orientation(player.orientation());
+                    player_group.set_orientation(player.orientation());
                 } else {
                     warn!("Local player wasn't in local state???");
                 }
@@ -380,11 +459,11 @@ fn create_player_render<M: Into<three::Material>>(
     material: M,
     player: &Player,
 ) -> RenderState {
-    let mut group = window.factory.group();
-    group.set_parent(&window.scene);
+    let group = window.factory.group();
+    window.scene.add(&group);
 
-    let mut mesh = window.factory.mesh(geometry, material);
-    mesh.set_parent(&group);
+    let mesh = window.factory.mesh(geometry, material);
+    group.add(&mesh);
     mesh.set_position(player.position);
     // TODO: Set the player's orientation to match the current pitch and yaw.
 

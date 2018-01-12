@@ -9,5 +9,5 @@ futures = "0.1"
 log = "0.4"
 log4rs = { version = "0.8", features = ["toml_format"] }
 sumi = { path = "../sumi" }
-three = { git = "https://github.com/three-rs/three", rev = "1cb4d94" }
+three = { git = "https://github.com/three-rs/three", rev = "24e1cd9", features = ["gltf-loader"] }
 tokio-core = "0.1"

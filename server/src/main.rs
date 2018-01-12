@@ -96,6 +96,7 @@ fn main() {
                         position: Point3::new(0.0, 0.0, 0.0),
                         yaw: 0.0,
                         pitch: 0.0,
+                        gun: Revolver::default(),
                     };
 
                     // Add the player to the world.
@@ -145,6 +146,7 @@ fn main() {
         // player based on the current input state, and then send the player's current state back
         // to the client.
         let mut disconnected = Vec::new();
+        let mut broadcasts = Vec::new();
         for client in &mut clients {
             // Poll the client's stream of incoming messages and handle each one we receive.
             loop {
@@ -162,8 +164,52 @@ fn main() {
                         client.latest_frame = message.frame;
 
                         // Handle the actual contents of the message.
+                        let player = world.players.get_mut(&client.id)
+                            .expect("No player for client ID");
                         match message.body {
                             ClientMessageBody::Input(input) => { client.input = input; }
+                            ClientMessageBody::RevolverAction(action) => match action {
+                                RevolverAction::PullTrigger => if player.gun.is_hammer_cocked {
+                                    if player.gun.current_cartridge() == Cartridge::Fresh {
+                                        player.gun.set_current_cartridge(Cartridge::Spent);
+
+                                        // TODO: Fire a bullet I guess.
+
+                                        // Queue a broadcast to be sent to all connected clients.
+                                        broadcasts.push(ServerMessageBody::RevolverTransition {
+                                            id: client.id,
+                                            state: player.gun.clone(),
+                                            transition: RevolverTransition::Fired {
+                                                // TODO: Actually create a bullet with a real bullet ID,
+                                                bullet_id: 0,
+                                            },
+                                        });
+                                    } else {
+                                        // Queue a broadcast to be sent to all connected clients.
+                                        broadcasts.push(ServerMessageBody::RevolverTransition {
+                                            id: client.id,
+                                            state: player.gun.clone(),
+                                            transition: RevolverTransition::HammerFell,
+                                        });
+                                    }
+
+                                    player.gun.is_hammer_cocked = false;
+                                }
+
+                                RevolverAction::PullHammer => if !player.gun.is_hammer_cocked {
+                                    // Rotate the cylinder to the next position when we pull the
+                                    // hammer.
+                                    player.gun.rotate_cylinder();
+                                    player.gun.is_hammer_cocked = true;
+
+                                    // Queue a broadcast to be sent to all connected clients.
+                                    broadcasts.push(ServerMessageBody::RevolverTransition {
+                                        id: client.id,
+                                        state: player.gun.clone(),
+                                        transition: RevolverTransition::HammerCocked,
+                                    });
+                                }
+                            }
                         }
                     }
 
@@ -207,15 +253,19 @@ fn main() {
 
         // Send the current world state to each of the connected clients.
         for client in &mut clients {
-            executor::spawn(&mut client.sink).start_send_notify(
-                ServerMessage {
+            for broadcast in &broadcasts {
+                client.sink.start_send(ServerMessage {
                     server_frame: frame_count,
                     client_frame: client.latest_frame,
-                    body: ServerMessageBody::WorldUpdate(world.clone()),
-                },
-                &notify,
-                0,
-            ).expect("Failed to start send");
+                    body: broadcast.clone(),
+                }).expect("Failed to start send");
+            }
+
+            client.sink.start_send(ServerMessage {
+                server_frame: frame_count,
+                client_frame: client.latest_frame,
+                body: ServerMessageBody::WorldUpdate(world.clone()),
+            }).expect("Failed to start send");
 
             // TODO: How do we poll if the send completed?
             executor::spawn(&mut client.sink).poll_flush_notify(&notify, 0).expect("Error polling sink");
