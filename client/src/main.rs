@@ -9,6 +9,7 @@ extern crate tokio_core;
 
 use core::*;
 use core::math::*;
+use core::revolver::*;
 use std::collections::{HashMap, VecDeque};
 use futures::prelude::*;
 use futures::sync::mpsc;
@@ -93,7 +94,6 @@ fn main() {
                     ServerMessageBody::WorldUpdate(..)
                     | ServerMessageBody::PlayerJoined { .. }
                     | ServerMessageBody::PlayerLeft { .. }
-                    | ServerMessageBody::RevolverTransition { .. }
                     => { panic!("Got the wrong message"); }
                 }
             })
@@ -260,49 +260,6 @@ fn main() {
                             state.render_state.remove(&id);
                         }
 
-                        ServerMessageBody::RevolverTransition { id, state: gun, transition } => {
-                            if id == state.id {
-                                match transition {
-                                    RevolverTransition::HammerCocked => {
-                                        // Update the orientation of the hammer to do the thing.
-                                        hammer_mesh.set_orientation(Quaternion::from(Euler::new(
-                                            Rad(PI / 6.0),
-                                            Rad(0.0),
-                                            Rad(0.0),
-                                        )));
-
-                                        // Update the orientation of the cylinder, based on its
-                                        // current position.
-                                        cylinder_mesh.set_orientation(Quaternion::from(Euler::new(
-                                            Rad(0.0),
-                                            Rad(0.0),
-                                            Rad(TAU / 6.0 * gun.cylinder_position as f32),
-                                        )));
-                                    }
-
-                                    RevolverTransition::HammerFell => {
-                                        // Update the orientation of the hammer to do the thing.
-                                        hammer_mesh.set_orientation(Quaternion::from(Euler::new(
-                                            Rad(0.0),
-                                            Rad(0.0),
-                                            Rad(0.0),
-                                        )));
-                                    }
-
-                                    RevolverTransition::Fired { bullet_id } => {
-                                        // Update the orientation of the hammer to do the thing.
-                                        hammer_mesh.set_orientation(Quaternion::from(Euler::new(
-                                            Rad(0.0),
-                                            Rad(0.0),
-                                            Rad(0.0),
-                                        )));
-
-                                        // TODO: Create a bullet.
-                                    }
-                                }
-                            }
-                        }
-
                         ServerMessageBody::Init { .. } => {}
                     }
 
@@ -351,9 +308,60 @@ fn main() {
                 // Update the render state for the local player.
                 if let Some(player) = state.local_world.players.get(&state.id) {
                     player_group.set_position(player.position);
-
-                    // TODO: Update the player's orientation to match the pitch and yaw.
                     player_group.set_orientation(player.orientation());
+
+                    match player.gun.hammer_state {
+                        HammerState::Uncocked => {
+                            let orientation = Quaternion::from(Euler::new(
+                                Rad(0.0),
+                                Rad(0.0),
+                                Rad(0.0),
+                            ));
+                            hammer_mesh.set_orientation(orientation);
+                        }
+
+                        HammerState::Cocking { remaining } => {
+                            let from = Quaternion::from(Euler::new(
+                                Rad(0.0),
+                                Rad(0.0),
+                                Rad(0.0),
+                            ));
+                            let to = Quaternion::from(Euler::new(
+                                Rad(PI / 6.0),
+                                Rad(0.0),
+                                Rad(0.0),
+                            ));
+
+                            let remaining_millis = remaining.as_millis();
+                            let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
+                            hammer_mesh.set_orientation(from.nlerp(to, t));
+                        }
+
+                        HammerState::Cocked => {
+                            hammer_mesh.set_orientation(Quaternion::from(Euler::new(
+                                Rad(PI / 6.0),
+                                Rad(0.0),
+                                Rad(0.0),
+                            )));
+                        }
+
+                        HammerState::Uncocking { remaining } => {
+                            let from = Quaternion::from(Euler::new(
+                                Rad(PI / 6.0),
+                                Rad(0.0),
+                                Rad(0.0),
+                            ));
+                            let to = Quaternion::from(Euler::new(
+                                Rad(0.0),
+                                Rad(0.0),
+                                Rad(0.0),
+                            ));
+
+                            let remaining_millis = remaining.as_millis();
+                            let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
+                            hammer_mesh.set_orientation(from.nlerp(to, t));
+                        }
+                    }
                 } else {
                     warn!("Local player wasn't in local state???");
                 }

@@ -9,6 +9,7 @@ extern crate sumi;
 extern crate tokio_core;
 
 use core::*;
+use core::revolver::*;
 use core::math::*;
 use futures::{Async, Future, Sink, Stream};
 use futures::executor;
@@ -93,6 +94,7 @@ fn main() {
                     info!("New player joined and was assigned ID {:#x}", id);
 
                     let player = Player {
+                        id,
                         position: Point3::new(0.0, 0.0, 0.0),
                         yaw: 0.0,
                         pitch: 0.0,
@@ -146,7 +148,7 @@ fn main() {
         // player based on the current input state, and then send the player's current state back
         // to the client.
         let mut disconnected = Vec::new();
-        let mut broadcasts = Vec::new();
+        let mut broadcasts = Vec::<ServerMessageBody>::new();
         for client in &mut clients {
             // Poll the client's stream of incoming messages and handle each one we receive.
             loop {
@@ -168,47 +170,8 @@ fn main() {
                             .expect("No player for client ID");
                         match message.body {
                             ClientMessageBody::Input(input) => { client.input = input; }
-                            ClientMessageBody::RevolverAction(action) => match action {
-                                RevolverAction::PullTrigger => if player.gun.is_hammer_cocked {
-                                    if player.gun.current_cartridge() == Cartridge::Fresh {
-                                        player.gun.set_current_cartridge(Cartridge::Spent);
-
-                                        // TODO: Fire a bullet I guess.
-
-                                        // Queue a broadcast to be sent to all connected clients.
-                                        broadcasts.push(ServerMessageBody::RevolverTransition {
-                                            id: client.id,
-                                            state: player.gun.clone(),
-                                            transition: RevolverTransition::Fired {
-                                                // TODO: Actually create a bullet with a real bullet ID,
-                                                bullet_id: 0,
-                                            },
-                                        });
-                                    } else {
-                                        // Queue a broadcast to be sent to all connected clients.
-                                        broadcasts.push(ServerMessageBody::RevolverTransition {
-                                            id: client.id,
-                                            state: player.gun.clone(),
-                                            transition: RevolverTransition::HammerFell,
-                                        });
-                                    }
-
-                                    player.gun.is_hammer_cocked = false;
-                                }
-
-                                RevolverAction::PullHammer => if !player.gun.is_hammer_cocked {
-                                    // Rotate the cylinder to the next position when we pull the
-                                    // hammer.
-                                    player.gun.rotate_cylinder();
-                                    player.gun.is_hammer_cocked = true;
-
-                                    // Queue a broadcast to be sent to all connected clients.
-                                    broadcasts.push(ServerMessageBody::RevolverTransition {
-                                        id: client.id,
-                                        state: player.gun.clone(),
-                                        transition: RevolverTransition::HammerCocked,
-                                    });
-                                }
+                            ClientMessageBody::RevolverAction(action) => {
+                                player.handle_revolver_action(action);
                             }
                         }
                     }
@@ -231,6 +194,9 @@ fn main() {
             // Tick the player.
             let player = world.players.get_mut(&client.id).expect("No player for id");
             player.step(&client.input, delta);
+
+            // Tick the player's revolver.
+            player.gun.step(target_frame_time);
         }
 
         // Remove any clients that have disconnected.

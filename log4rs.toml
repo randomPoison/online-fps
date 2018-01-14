@@ -14,3 +14,4 @@ appenders = ["stdout"]
 [loggers]
 client = { level = "debug" }
 server = { level = "debug" }
+core = { level = "debug" }

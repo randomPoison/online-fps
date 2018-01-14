@@ -1,5 +1,7 @@
 extern crate cgmath;
 extern crate futures;
+#[macro_use]
+extern crate log;
 extern crate rand;
 #[macro_use]
 extern crate serde;
@@ -9,32 +11,25 @@ use futures::executor::{Notify, Spawn};
 use std::collections::HashMap;
 use std::str;
 use std::sync::Arc;
+use std::time::Duration;
 
 use math::*;
+use revolver::*;
 
-/// Re-exports math types.
-pub mod math {
-    pub use cgmath::*;
-    pub use std::f32::consts::PI;
+pub mod math;
+pub mod revolver;
 
-    pub const TAU: f32 = ::std::f32::consts::PI * 2.0;
+/// Extra functionality for [`std::time::Duration`].
+///
+/// [`std::time::Duration`]: https://doc.rust-lang.org/std/time/struct.Duration.html
+pub trait DurationExt {
+    /// Returns the number of *whole* milliseconds contained by this `Duration`.
+    fn as_millis(&self) -> u64;
+}
 
-    pub trait Clamp {
-        fn clamp(self, min: Self, max: Self) -> Self;
-    }
-
-    impl Clamp for f32 {
-        fn clamp(self, min: Self, max: Self) -> Self {
-            if self < min { return min; } else if self > max { return max; }
-            self
-        }
-    }
-
-    impl Clamp for f64 {
-        fn clamp(self, min: Self, max: Self) -> Self {
-            if self < min { return min; } else if self > max { return max; }
-            self
-        }
+impl DurationExt for Duration {
+    fn as_millis(&self) -> u64 {
+        (self.as_secs() * 1_000) + (self.subsec_nanos() as u64 / 1_000_000)
     }
 }
 
@@ -54,6 +49,9 @@ impl World {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
+    pub id: u64,
+
+    /// The player's current root position in 3D space.
     pub position: Point3<f32>,
 
     /// The player's current yaw.
@@ -90,6 +88,32 @@ impl Player {
         let velocity = forward * input.movement_dir.y + right * input.movement_dir.x;
 
         self.position += velocity * delta;
+    }
+
+    pub fn handle_revolver_action(&mut self, action: RevolverAction) {
+        match action {
+            RevolverAction::PullTrigger => if self.gun.is_hammer_cocked() {
+                debug!("Player {:#x} pulling trigger", self.id);
+
+                self.gun.hammer_state = HammerState::Uncocking {
+                    remaining: Duration::from_millis(HAMMER_FALL_MILLIS),
+                };
+            }
+
+            RevolverAction::PullHammer => if self.gun.is_hammer_uncocked() {
+                debug!("Player {:#x} cocking hammer", self.id);
+
+                // Rotate the cylinder to the next position when we pull the
+                // hammer.
+                // TODO: Animate the cylinder rotation, the way we animate
+                // the hammer.
+                self.gun.rotate_cylinder();
+
+                self.gun.hammer_state = HammerState::Cocking {
+                    remaining: Duration::from_millis(HAMMER_COCK_MILLIS),
+                };
+            }
+        }
     }
 
     pub fn orientation(&self) -> Quaternion<f32> {
@@ -213,18 +237,6 @@ pub enum ServerMessageBody {
     PlayerLeft {
         id: u64,
     },
-
-    /// A player's gun changed state.
-    RevolverTransition {
-        /// The unique ID for the player who's gun changed state.
-        id: u64,
-
-        /// The new state for the player's gun.
-        state: Revolver,
-
-        /// The transition that occurred.
-        transition: RevolverTransition,
-    },
 }
 
 /// A message sent from the client to the server.
@@ -245,69 +257,4 @@ pub struct ClientMessage {
 pub enum ClientMessageBody {
     Input(InputFrame),
     RevolverAction(RevolverAction),
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Revolver {
-    pub is_hammer_cocked: bool,
-
-    /// Indicates which of the slots in the cyndler is in the top position.
-    pub cylinder_position: usize,
-
-    /// The 6 cartidge positions in the cylinder.
-    ///
-    /// Each slot can be empty, loaded with a fresh cartridge, or loaded with an empty cartridge.
-    pub cartridges: [Cartridge; 6],
-}
-
-impl Revolver {
-    /// Rotates the cylinder to the next position.
-    pub fn rotate_cylinder(&mut self) {
-        self.cylinder_position = (self.cylinder_position + 1) % 6;
-    }
-
-    /// Returns the state of the currently active cartridge (according to `cylinder_position`).
-    pub fn current_cartridge(&self) -> Cartridge {
-        self.cartridges[self.cylinder_position]
-    }
-
-    /// Sets the state of the currently active cartridge, returning the previous state.
-    pub fn set_current_cartridge(&mut self, cartridge: Cartridge) -> Cartridge {
-        let old = self.cartridges[self.cylinder_position];
-        self.cartridges[self.cylinder_position] = cartridge;
-        old
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Cartridge {
-    Empty,
-    Fresh,
-    Spent,
-}
-
-impl Default for Cartridge {
-    fn default() -> Self { Cartridge::Empty }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum RevolverAction {
-    PullHammer,
-    PullTrigger,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum RevolverTransition {
-    /// The revolver's hammer was cocked.
-    HammerCocked,
-
-    /// The trigger was pulled when the hammer was cocked and the hammer fell, but the current
-    /// cartridge was empty or spent, and so no bullet was fired.
-    HammerFell,
-
-    /// The trigger was pulled and the revolver fired a bullet.
-    Fired {
-        /// The ID for the bullet that was spawned when the gun was fired.
-        bullet_id: u64,
-    }
 }
