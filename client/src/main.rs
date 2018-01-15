@@ -289,6 +289,7 @@ fn main() {
                         .expect("Couldn't find player in local state");
                     for &(_, ref input) in &state.input_history {
                         player.step(input, window.input.delta_time());
+                        // player.gun.step(::std::time::Duration::from_secs(1) / 60);
                     }
 
                     // TODO: Simulate forward for the other players.
@@ -310,56 +311,72 @@ fn main() {
                     player_group.set_position(player.position);
                     player_group.set_orientation(player.orientation());
 
+                    let uncocked_orientation = Quaternion::from(Euler::new(
+                        Rad(0.0),
+                        Rad(0.0),
+                        Rad(0.0),
+                    ));
+
+                    let cocked_orientation = Quaternion::from(Euler::new(
+                        Rad(PI / 6.0),
+                        Rad(0.0),
+                        Rad(0.0),
+                    ));
+
+                    // Set the orientation of the hammer based on the hammer state.
                     match player.gun.hammer_state {
                         HammerState::Uncocked => {
-                            let orientation = Quaternion::from(Euler::new(
-                                Rad(0.0),
-                                Rad(0.0),
-                                Rad(0.0),
-                            ));
-                            hammer_mesh.set_orientation(orientation);
+                            hammer_mesh.set_orientation(uncocked_orientation);
                         }
 
                         HammerState::Cocking { remaining } => {
-                            let from = Quaternion::from(Euler::new(
-                                Rad(0.0),
-                                Rad(0.0),
-                                Rad(0.0),
-                            ));
-                            let to = Quaternion::from(Euler::new(
-                                Rad(PI / 6.0),
-                                Rad(0.0),
-                                Rad(0.0),
-                            ));
-
                             let remaining_millis = remaining.as_millis();
                             let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
-                            hammer_mesh.set_orientation(from.nlerp(to, t));
+                            hammer_mesh.set_orientation(
+                                uncocked_orientation.nlerp(cocked_orientation, t),
+                            );
                         }
 
                         HammerState::Cocked => {
-                            hammer_mesh.set_orientation(Quaternion::from(Euler::new(
-                                Rad(PI / 6.0),
-                                Rad(0.0),
-                                Rad(0.0),
-                            )));
+                            hammer_mesh.set_orientation(cocked_orientation);
                         }
 
                         HammerState::Uncocking { remaining } => {
-                            let from = Quaternion::from(Euler::new(
-                                Rad(PI / 6.0),
+                            let remaining_millis = remaining.as_millis();
+                            let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
+                            hammer_mesh.set_orientation(
+                                cocked_orientation.nlerp(uncocked_orientation, t),
+                            );
+                        }
+                    }
+
+                    // Set the orientation of the cylinder based on the hammer state.
+                    let cylinder_orientation = Quaternion::from(Euler::new(
+                        Rad(0.0),
+                        Rad(0.0),
+                        Rad(TAU / 6.0 * player.gun.cylinder_position as f32),
+                    ));
+                    match player.gun.hammer_state {
+                        // If the hammer is cocking, we animate the rotation of the cylinder as it
+                        // rotates to the current position.
+                        HammerState::Cocking { remaining } => {
+                            let prev_orientation = Quaternion::from(Euler::new(
                                 Rad(0.0),
                                 Rad(0.0),
-                            ));
-                            let to = Quaternion::from(Euler::new(
-                                Rad(0.0),
-                                Rad(0.0),
-                                Rad(0.0),
+                                Rad(TAU / 6.0 * (player.gun.cylinder_position as f32 - 1.0)),
                             ));
 
                             let remaining_millis = remaining.as_millis();
                             let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
-                            hammer_mesh.set_orientation(from.nlerp(to, t));
+
+                            let orientation = prev_orientation.nlerp(cylinder_orientation, t);
+                            cylinder_mesh.set_orientation(orientation);
+                        }
+
+                        // For all other hammer state, the cylinder is static at its current
+                        // position.
+                        _ => {
+                            cylinder_mesh.set_orientation(cylinder_orientation);
                         }
                     }
                 } else {

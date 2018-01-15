@@ -93,22 +93,17 @@ impl Player {
     pub fn handle_revolver_action(&mut self, action: RevolverAction) {
         match action {
             RevolverAction::PullTrigger => if self.gun.is_hammer_cocked() {
-                debug!("Player {:#x} pulling trigger", self.id);
-
                 self.gun.hammer_state = HammerState::Uncocking {
                     remaining: Duration::from_millis(HAMMER_FALL_MILLIS),
                 };
             }
 
             RevolverAction::PullHammer => if self.gun.is_hammer_uncocked() {
-                debug!("Player {:#x} cocking hammer", self.id);
-
                 // Rotate the cylinder to the next position when we pull the
                 // hammer.
-                // TODO: Animate the cylinder rotation, the way we animate
-                // the hammer.
                 self.gun.rotate_cylinder();
 
+                // Start cocking the hammer.
                 self.gun.hammer_state = HammerState::Cocking {
                     remaining: Duration::from_millis(HAMMER_COCK_MILLIS),
                 };
