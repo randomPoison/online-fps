@@ -1,7 +1,5 @@
 extern crate cgmath;
 extern crate futures;
-#[macro_use]
-extern crate log;
 extern crate rand;
 #[macro_use]
 extern crate serde;
@@ -98,7 +96,7 @@ impl Player {
                 };
             }
 
-            RevolverAction::PullHammer => if self.gun.is_hammer_uncocked() {
+            RevolverAction::PullHammer => if self.gun.is_hammer_uncocked() && self.gun.is_cylinder_closed() {
                 // Rotate the cylinder to the next position when we pull the
                 // hammer.
                 self.gun.rotate_cylinder();
@@ -107,6 +105,37 @@ impl Player {
                 self.gun.hammer_state = HammerState::Cocking {
                     remaining: Duration::from_millis(HAMMER_COCK_MILLIS),
                 };
+            }
+
+            // Only allow the player to open the cylinder if the hammer isn't cocked; Safety first!
+            RevolverAction::ToggleCylinder => if self.gun.is_hammer_uncocked() {
+                match self.gun.cylinder_state {
+                    CylinderState::Closed { position } => {
+                        self.gun.cylinder_state = CylinderState::Opening {
+                            remaining: Duration::from_millis(CYLINDER_OPEN_MILLIS),
+                            rotation: position as f32,
+                        };
+                    }
+
+                    CylinderState::Open { rotation } => {
+                        self.gun.cylinder_state = CylinderState::Closing {
+                            remaining: Duration::from_millis(CYLINDER_OPEN_MILLIS),
+                            rotation,
+                        };
+                    }
+
+                    _ => {}
+                }
+            }
+
+            RevolverAction::LoadCartridge => if self.gun.is_cylinder_open() {
+                // Iterate over the chambers and put a fresh cartridge in the first empty one.
+                for chamber in &mut self.gun.cartridges {
+                    if chamber.is_none() {
+                        *chamber = Some(Cartridge::Fresh);
+                        return;
+                    }
+                }
             }
         }
     }

@@ -18,16 +18,29 @@ use futures::executor;
 use std::io;
 use std::thread;
 use sumi::Connection;
-use three::{Key, MouseButton, Object};
+use three::{
+    CursorState,
+    Gltf,
+    GltfNodeInstance,
+    GltfSceneInstance,
+    Group,
+    Key,
+    MouseButton,
+    Object,
+};
 use tokio_core::reactor::Core;
 
 fn main() {
     // Initialize logging first so that we can start capturing logs immediately.
-    log4rs::init_file("../log4rs.toml", Default::default()).expect("Failed to init log4rs");
+    log4rs::init_file(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../log4rs.toml"),
+        Default::default(),
+    ).expect("Failed to init log4rs");
 
     // Open a window.
     let mut window = three::Window::new("online-fps client");
     window.scene.background = three::Background::Color(0xC6F0FF);
+    window.set_cursor_state(CursorState::Grab);
 
     // Create the event loop that will drive network communication.
     let (sender, receiver) = oneshot::channel();
@@ -121,15 +134,45 @@ fn main() {
     player_group.add(&camera);
 
     // Load the revolver model and add it to the scene.
-    let revolver_source = window.factory.load_gltf("../assets/revolver/revolver-python.gltf");
-    player_group.add(&revolver_source.group);
+    let revolver_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../assets/revolver/revolver-python.gltf",
+    );
+    let revolver_source = window.factory.load_gltf(revolver_path);
 
-    // Retreive the mesh for the cylinder, so that we can manipulate it.
-    // TODO: We can look at the glTF source for the revolver and see that mesh 0 is the cylinder,
-    // but how do we handle the list of meshes that could be associated with it? Right now we know
-    // that there's only 1, but that could change.
-    let cylinder_mesh = revolver_source.meshes[2][0].clone();
-    let hammer_mesh = revolver_source.meshes[0][0].clone();
+    let bullet_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../assets/revolver/bullet-9mm.gltf",
+    );
+    let bullet_source = window.factory.load_gltf(bullet_path);
+
+    let static_revolver = window.factory.instantiate_gltf_scene(&bullet_source, 0);
+    window.scene.add(&static_revolver.root_group);
+
+    let revolver = window.factory.instantiate_gltf_scene(&revolver_source, 0);
+    player_group.add(&revolver.root_group);
+
+    // Retreive the node for the revolver's cylinder.
+    let cylinder_index = revolver_source.node_index_for_name("Cylinder").unwrap();
+    let cylinder = revolver.nodes[&cylinder_index].clone();
+
+    // Retreive the nodes that mark each of the chambers in the cylinder.
+    let mut chambers = [
+        Chamber::from_gltf(&revolver_source, &revolver, "Chamber 0"),
+        Chamber::from_gltf(&revolver_source, &revolver, "Chamber 1"),
+        Chamber::from_gltf(&revolver_source, &revolver, "Chamber 2"),
+        Chamber::from_gltf(&revolver_source, &revolver, "Chamber 3"),
+        Chamber::from_gltf(&revolver_source, &revolver, "Chamber 4"),
+        Chamber::from_gltf(&revolver_source, &revolver, "Chamber 5"),
+    ];
+
+    // Retreive the pivot for the revolver's cylinder.
+    let pivot_index = revolver_source.node_index_for_name("Cylinder Pivot").unwrap();
+    let pivot = revolver.nodes[&pivot_index].clone();
+
+    // Retreive the node for the revolver's hammer.
+    let hammer_index = revolver_source.node_index_for_name("Hammer").unwrap();
+    let hammer = revolver.nodes[&hammer_index].clone();
 
     // Build a box mesh.
     let geometry = three::Geometry::cuboid(1.0, 1.0, 1.0);
@@ -140,12 +183,22 @@ fn main() {
         .. Default::default()
     };
 
+    // HACK: We need to track which frame a button was pressed/released because three does not
+    // yet do that itself.
+    let mut r_pressed = false;
+
     // Run the main loop of the game.
     // ==============================
 
     let mut frame_count = 0;
     while window.update() {
         frame_count += 1;
+
+        // TODO: Instead of immediately quitting, release the cursor when the user hits the
+        // escape key, and re-grab it when the window regains focus.
+        if window.input.hit(Key::Escape) {
+            break;
+        }
 
         match game_state.take() {
             Some(mut state) => {
@@ -170,7 +223,7 @@ fn main() {
                     direction
                 };
 
-                // Check for gun manipulation commands.
+                // Left mouse button pulls the trigger.
                 if window.input.hit(MouseButton::Left) {
                     // Send the current input state to the server.
                     let message = ClientMessage {
@@ -182,6 +235,7 @@ fn main() {
                     state.sender.start_send(message).expect("Failed to start send");
                 }
 
+                // Right mouse button pulls the hammer.
                 if window.input.hit(MouseButton::Right) {
                     // Send the current input state to the server.
                     let message = ClientMessage {
@@ -193,8 +247,38 @@ fn main() {
                     state.sender.start_send(message).expect("Failed to start send");
                 }
 
+                // Left shift opens and closes the cylinder.
+                if window.input.hit(Key::LShift) {
+                    // Send the current input state to the server.
+                    let message = ClientMessage {
+                        frame: frame_count,
+                        body: ClientMessageBody::RevolverAction(RevolverAction::ToggleCylinder),
+                    };
+
+                    // TODO: This should be a send-reliable.
+                    state.sender.start_send(message).expect("Failed to start send");
+                }
+
+                // `R` key loads a cartridge into the cylinder.
+                if window.input.hit(Key::R) {
+                    if !r_pressed {
+                        r_pressed = true;
+
+                        // Send the current input state to the server.
+                        let message = ClientMessage {
+                            frame: frame_count,
+                            body: ClientMessageBody::RevolverAction(RevolverAction::LoadCartridge),
+                        };
+
+                        // TODO: This should be a send-reliable.
+                        state.sender.start_send(message).expect("Failed to start send");
+                    }
+                } else {
+                    r_pressed = false;
+                }
+
                 // Get input from mouse movement.
-                let mouse_delta = window.input.mouse_delta();
+                let mouse_delta = window.input.mouse_delta_raw();
                 input_state.yaw_delta = -mouse_delta.x * TAU * 0.001;
                 input_state.pitch_delta = mouse_delta.y * TAU * 0.001;
 
@@ -326,57 +410,144 @@ fn main() {
                     // Set the orientation of the hammer based on the hammer state.
                     match player.gun.hammer_state {
                         HammerState::Uncocked => {
-                            hammer_mesh.set_orientation(uncocked_orientation);
+                            hammer.group.set_orientation(uncocked_orientation);
                         }
 
                         HammerState::Cocking { remaining } => {
                             let remaining_millis = remaining.as_millis();
                             let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
-                            hammer_mesh.set_orientation(
+                            hammer.group.set_orientation(
                                 uncocked_orientation.nlerp(cocked_orientation, t),
                             );
                         }
 
                         HammerState::Cocked => {
-                            hammer_mesh.set_orientation(cocked_orientation);
+                            hammer.group.set_orientation(cocked_orientation);
                         }
 
                         HammerState::Uncocking { remaining } => {
                             let remaining_millis = remaining.as_millis();
                             let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
-                            hammer_mesh.set_orientation(
+                            hammer.group.set_orientation(
                                 cocked_orientation.nlerp(uncocked_orientation, t),
                             );
                         }
                     }
 
-                    // Set the orientation of the cylinder based on the hammer state.
-                    let cylinder_orientation = Quaternion::from(Euler::new(
+                    // Update the render state of the cylinder.
+                    // ----------------------------------------
+
+                    let closed_orientation = Quaternion::from(Euler::new(
                         Rad(0.0),
                         Rad(0.0),
-                        Rad(TAU / 6.0 * player.gun.cylinder_position as f32),
+                        Rad(0.0),
                     ));
-                    match player.gun.hammer_state {
-                        // If the hammer is cocking, we animate the rotation of the cylinder as it
-                        // rotates to the current position.
-                        HammerState::Cocking { remaining } => {
-                            let prev_orientation = Quaternion::from(Euler::new(
+
+                    let open_orientation = Quaternion::from(Euler::new(
+                        Rad(0.0),
+                        Rad(0.0),
+                        Rad(PI / 2.0),
+                    ));
+
+                    match player.gun.cylinder_state {
+                        // If the cylinder is closed, use the current cylinder position, taking
+                        // into account the hammer animation if necessary.
+                        CylinderState::Closed { position } => {
+                            let cylinder_orientation = Quaternion::from(Euler::new(
                                 Rad(0.0),
                                 Rad(0.0),
-                                Rad(TAU / 6.0 * (player.gun.cylinder_position as f32 - 1.0)),
+                                Rad(TAU / 6.0 * position as f32),
                             ));
+                            match player.gun.hammer_state {
+                                // If the hammer is cocking, we animate the rotation of the cylinder as it
+                                // rotates to the current position.
+                                HammerState::Cocking { remaining } => {
+                                    let prev_orientation = Quaternion::from(Euler::new(
+                                        Rad(0.0),
+                                        Rad(0.0),
+                                        Rad(TAU / 6.0 * (position as f32 - 1.0)),
+                                    ));
 
-                            let remaining_millis = remaining.as_millis();
-                            let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
+                                    let remaining_millis = remaining.as_millis();
+                                    let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
 
-                            let orientation = prev_orientation.nlerp(cylinder_orientation, t);
-                            cylinder_mesh.set_orientation(orientation);
+                                    let orientation = prev_orientation.nlerp(cylinder_orientation, t);
+                                    cylinder.group.set_orientation(orientation);
+                                }
+
+                                // For all other hammer state, the cylinder is static at its current
+                                // position.
+                                _ => {
+                                    cylinder.group.set_orientation(cylinder_orientation);
+                                }
+                            }
                         }
 
-                        // For all other hammer state, the cylinder is static at its current
-                        // position.
-                        _ => {
-                            cylinder_mesh.set_orientation(cylinder_orientation);
+                        CylinderState::Opening { remaining, rotation } => {
+                            // Lerp the cylinder opening.
+                            let remaining_millis = remaining.as_millis();
+                            let t = 1.0 - (remaining_millis as f32 / CYLINDER_OPEN_MILLIS as f32);
+                            pivot.group.set_orientation(
+                                closed_orientation.nlerp(open_orientation, t),
+                            );
+
+                            cylinder.group.set_orientation(Quaternion::from(Euler::new(
+                                Rad(0.0),
+                                Rad(0.0),
+                                Rad(TAU * rotation / 6.0),
+                            )));
+                        }
+
+                        CylinderState::Open { rotation } => {
+                            pivot.group.set_orientation(open_orientation);
+
+                            cylinder.group.set_orientation(Quaternion::from(Euler::new(
+                                Rad(0.0),
+                                Rad(0.0),
+                                Rad(TAU * rotation / 6.0),
+                            )));
+                        }
+
+                        CylinderState::Closing { remaining, rotation } => {
+                            // Lerp the cylinder closing.
+                            let remaining_millis = remaining.as_millis();
+                            let t = 1.0 - (remaining_millis as f32 / CYLINDER_OPEN_MILLIS as f32);
+                            pivot.group.set_orientation(
+                                open_orientation.nlerp(closed_orientation, t),
+                            );
+
+                            cylinder.group.set_orientation(Quaternion::from(Euler::new(
+                                Rad(0.0),
+                                Rad(0.0),
+                                Rad(TAU * rotation / 6.0),
+                            )));
+                        }
+                    }
+
+                    // Update the render state of the cartridges in the cylinder.
+                    for chamber_index in 0 .. 6 {
+                        let chamber = &mut chambers[chamber_index];
+                        match player.gun.cartridges[chamber_index] {
+                            Some(..) => {
+                                // If there's not already a cartridge instance in the scene
+                                // for the current chamber, add one.
+                                if chamber.cartridge.is_none() {
+                                    // TODO: Don't create a new bullet instance every time, pool
+                                    // objects and reuse them.
+                                    let bullet = window.factory.instantiate_gltf_scene(&bullet_source, 0);
+
+                                    // Add the bullet instance to the scene.
+                                    chamber.node.group.add(&bullet.root_group);
+
+                                    chamber.cartridge = Some(bullet.root_group.clone());
+                                }
+                            },
+
+                            None => {
+                                if let Some(_) = chamber.cartridge.take() {
+                                    unimplemented!("Remove cartridge if necessary");
+                                }
+                            },
                         }
                     }
                 } else {
@@ -495,5 +666,23 @@ fn create_player_render<M: Into<three::Material>>(
     RenderState {
         group,
         mesh,
+    }
+}
+
+#[derive(Debug)]
+struct Chamber {
+    node: GltfNodeInstance,
+    cartridge: Option<Group>,
+}
+
+impl Chamber {
+    fn from_gltf(gltf: &Gltf, instance: &GltfSceneInstance, node_name: &str) -> Chamber {
+        let index = gltf.node_index_for_name(node_name).unwrap();
+        let node = instance.nodes[&index].clone();
+
+        Chamber {
+            node,
+            cartridge: None,
+        }
     }
 }

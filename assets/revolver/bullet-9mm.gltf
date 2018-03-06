@@ -1,0 +1,204 @@
+{
+    "accessors" : [
+        {
+            "bufferView" : 0, 
+            "componentType" : 5121, 
+            "count" : 54, 
+            "max" : [
+                35
+            ], 
+            "min" : [
+                0
+            ], 
+            "type" : "SCALAR"
+        }, 
+        {
+            "bufferView" : 1, 
+            "componentType" : 5126, 
+            "count" : 36, 
+            "max" : [
+                0.0038903183303773403, 
+                0.004160769749432802, 
+                -0.004210521001368761
+            ], 
+            "min" : [
+                -0.003947925288230181, 
+                -0.003677478525787592, 
+                -0.011979009956121445
+            ], 
+            "type" : "VEC3"
+        }, 
+        {
+            "bufferView" : 2, 
+            "componentType" : 5126, 
+            "count" : 36, 
+            "max" : [
+                0.703143298625946, 
+                0.7031423449516296, 
+                -0.10575569421052933
+            ], 
+            "min" : [
+                -0.7031418681144714, 
+                -0.7031419277191162, 
+                -1.0
+            ], 
+            "type" : "VEC3"
+        }, 
+        {
+            "bufferView" : 3, 
+            "componentType" : 5121, 
+            "count" : 150, 
+            "max" : [
+                79
+            ], 
+            "min" : [
+                0
+            ], 
+            "type" : "SCALAR"
+        }, 
+        {
+            "bufferView" : 4, 
+            "componentType" : 5126, 
+            "count" : 80, 
+            "max" : [
+                0.004723451100289822, 
+                0.0048705581575632095, 
+                0.01188185065984726
+            ], 
+            "min" : [
+                -0.004708798136562109, 
+                -0.004561699461191893, 
+                -0.004210521001368761
+            ], 
+            "type" : "VEC3"
+        }, 
+        {
+            "bufferView" : 5, 
+            "componentType" : 5126, 
+            "count" : 80, 
+            "max" : [
+                0.707107424736023, 
+                0.7071068286895752, 
+                1.0
+            ], 
+            "min" : [
+                -0.7071073651313782, 
+                -0.7071069478988647, 
+                -1.0
+            ], 
+            "type" : "VEC3"
+        }
+    ], 
+    "asset" : {
+        "generator" : "Khronos Blender glTF 2.0 exporter", 
+        "version" : "2.0"
+    }, 
+    "bufferViews" : [
+        {
+            "buffer" : 0, 
+            "byteLength" : 54, 
+            "byteOffset" : 0, 
+            "target" : 34963
+        }, 
+        {
+            "buffer" : 0, 
+            "byteLength" : 432, 
+            "byteOffset" : 56, 
+            "target" : 34962
+        }, 
+        {
+            "buffer" : 0, 
+            "byteLength" : 432, 
+            "byteOffset" : 488, 
+            "target" : 34962
+        }, 
+        {
+            "buffer" : 0, 
+            "byteLength" : 150, 
+            "byteOffset" : 920, 
+            "target" : 34963
+        }, 
+        {
+            "buffer" : 0, 
+            "byteLength" : 960, 
+            "byteOffset" : 1072, 
+            "target" : 34962
+        }, 
+        {
+            "buffer" : 0, 
+            "byteLength" : 960, 
+            "byteOffset" : 2032, 
+            "target" : 34962
+        }
+    ], 
+    "buffers" : [
+        {
+            "byteLength" : 2992, 
+            "uri" : "bullet-9mm.bin"
+        }
+    ], 
+    "materials" : [
+        {
+            "name" : "metal_copper", 
+            "pbrMetallicRoughness" : {
+                "baseColorFactor" : [
+                    0.27917027473449707, 
+                    0.11537003517150879, 
+                    0.0692158192396164, 
+                    1.0
+                ], 
+                "metallicFactor" : 0.0
+            }
+        }, 
+        {
+            "name" : "metal_gold", 
+            "pbrMetallicRoughness" : {
+                "baseColorFactor" : [
+                    0.3995513916015625, 
+                    0.2635576128959656, 
+                    0.10431844741106033, 
+                    1.0
+                ], 
+                "metallicFactor" : 0.0
+            }
+        }
+    ], 
+    "meshes" : [
+        {
+            "name" : "Cube.003", 
+            "primitives" : [
+                {
+                    "attributes" : {
+                        "NORMAL" : 2, 
+                        "POSITION" : 1
+                    }, 
+                    "indices" : 0, 
+                    "material" : 0
+                }, 
+                {
+                    "attributes" : {
+                        "NORMAL" : 5, 
+                        "POSITION" : 4
+                    }, 
+                    "indices" : 3, 
+                    "material" : 1
+                }
+            ]
+        }
+    ], 
+    "nodes" : [
+        {
+            "mesh" : 0, 
+            "name" : "bullet-9mm"
+        }
+    ], 
+    "scene" : 0, 
+    "scenes" : [
+        {
+            "name" : "Scene", 
+            "nodes" : [
+                0
+            ]
+        }
+    ]
+}

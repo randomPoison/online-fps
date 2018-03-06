@@ -148,7 +148,7 @@ fn main() {
         // player based on the current input state, and then send the player's current state back
         // to the client.
         let mut disconnected = Vec::new();
-        let mut broadcasts = Vec::<ServerMessageBody>::new();
+        let broadcasts = Vec::<ServerMessageBody>::new();
         for client in &mut clients {
             // Poll the client's stream of incoming messages and handle each one we receive.
             loop {
