@@ -5,6 +5,8 @@ pub const HAMMER_COCK_MILLIS: u64 = 300;
 pub const HAMMER_FALL_MILLIS: u64 = 50;
 pub const CYLINDER_OPEN_MILLIS: u64 = 300;
 
+pub static EJECT_KEYFRAME_MILLIS: &[u64] = &[300, 200, 500];
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Revolver {
     /// The current state of the hammer.
@@ -70,6 +72,38 @@ impl Revolver {
                     None => {
                         let position = rotation.round() as usize % 6;
                         self.cylinder_state = CylinderState::Closed { position };
+                    }
+                }
+            }
+
+            CylinderState::Ejecting { rotation, keyframe, remaining } => {
+                match remaining.checked_sub(delta) {
+                    Some(remaining) => {
+                        self.cylinder_state = CylinderState::Ejecting { rotation, keyframe, remaining };
+                    }
+
+                    None => {
+                        let keyframe = keyframe + 1;
+                        if keyframe < EJECT_KEYFRAME_MILLIS.len() {
+
+                            // After the pause in the middle of the animation, officially remove
+                            // all cartridges from the cylinder.
+                            if keyframe == 2 {
+                                self.cartridges = [None; 6];
+                            }
+
+                            // Continue to the next keyframe of the eject animation.
+                            self.cylinder_state = CylinderState::Ejecting {
+                                rotation,
+                                keyframe,
+
+                                // TODO: Apply overflow to the progress of the next keyframe.
+                                remaining: Duration::from_millis(EJECT_KEYFRAME_MILLIS[keyframe]),
+                            }
+                        } else {
+                            // The eject animation is done, so return to the open state.
+                            self.cylinder_state = CylinderState::Open { rotation };
+                        }
                     }
                 }
             }
@@ -175,6 +209,7 @@ pub enum RevolverAction {
     PullTrigger,
     ToggleCylinder,
     LoadCartridge,
+    EjectCartridges,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -193,6 +228,12 @@ pub enum CylinderState {
         rotation: f32,
     },
 
+    Ejecting {
+        rotation: f32,
+        keyframe: usize,
+        remaining: Duration,
+    },
+
     Closing {
         remaining: Duration,
         rotation: f32,
@@ -204,11 +245,28 @@ impl CylinderState {
     ///
     /// # Panics
     ///
-    /// Panics if the cylinder is not closed (i.e. if it is open or animating).
+    /// Panics if the cylinder is not closed (e.g. if it is open or animating).
     pub fn position(&self) -> usize {
         match *self {
             CylinderState::Closed { position } => position,
             _ => panic!("Can only get cylinder position if closed: {:?}", self),
+        }
+    }
+
+    /// Returns the current rotation of the cylinder, if applicable for the current state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the cylinder is not in a state which defines a rotation (e.g. if the cylinder
+    /// is closed).
+    pub fn rotation(&self) -> f32 {
+        match *self {
+            CylinderState::Opening { rotation, .. } => rotation,
+            CylinderState::Open { rotation } => rotation,
+            CylinderState::Ejecting { rotation, .. } => rotation,
+            CylinderState::Closing { rotation, .. } => rotation,
+
+            _ => panic!("Cannot get the rotation for cylinder state: {:?}", self),
         }
     }
 }

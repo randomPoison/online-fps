@@ -146,6 +146,32 @@ fn main() {
     );
     let bullet_source = window.factory.load_gltf(bullet_path);
 
+    let eject_keyframes = [
+        Quaternion::from(Euler::new(
+            Rad(0.0),
+            Rad(0.0),
+            Rad(0.0),
+        )),
+
+        Quaternion::from(Euler::new(
+            Rad(PI / 2.0),
+            Rad(0.0),
+            Rad(0.0),
+        )),
+
+        Quaternion::from(Euler::new(
+            Rad(PI / 2.0),
+            Rad(0.0),
+            Rad(0.0),
+        )),
+
+        Quaternion::from(Euler::new(
+            Rad(0.0),
+            Rad(0.0),
+            Rad(0.0),
+        )),
+    ];
+
     let static_revolver = window.factory.instantiate_gltf_scene(&bullet_source, 0);
     window.scene.add(&static_revolver.root_group);
 
@@ -165,6 +191,10 @@ fn main() {
         Chamber::from_gltf(&revolver_source, &revolver, "Chamber 4"),
         Chamber::from_gltf(&revolver_source, &revolver, "Chamber 5"),
     ];
+
+    // Retreive the root node for the revolver in the scene.
+    let body_index = revolver_source.node_index_for_name("Body").unwrap();
+    let revolver_body = revolver.nodes[&body_index].clone();
 
     // Retreive the pivot for the revolver's cylinder.
     let pivot_index = revolver_source.node_index_for_name("Cylinder Pivot").unwrap();
@@ -275,6 +305,17 @@ fn main() {
                     }
                 } else {
                     r_pressed = false;
+                }
+
+                if window.input.hit(Key::Tab) {
+                    // Send the current input state to the server.
+                    let message = ClientMessage {
+                        frame: frame_count,
+                        body: ClientMessageBody::RevolverAction(RevolverAction::EjectCartridges),
+                    };
+
+                    // TODO: This should be a send-reliable.
+                    state.sender.start_send(message).expect("Failed to start send");
                 }
 
                 // Get input from mouse movement.
@@ -522,6 +563,25 @@ fn main() {
                                 Rad(TAU * rotation / 6.0),
                             )));
                         }
+
+                        CylinderState::Ejecting { remaining, keyframe, rotation } => {
+                            // Make sure cylinder rotation is correct.
+                            cylinder.group.set_orientation(Quaternion::from(Euler::new(
+                                Rad(0.0),
+                                Rad(0.0),
+                                Rad(TAU * rotation / 6.0),
+                            )));
+
+                            let remaining_millis = remaining.as_millis();
+                            let duration = EJECT_KEYFRAME_MILLIS[keyframe];
+                            let t = 1.0 - (remaining_millis as f32 / duration as f32);
+
+                            let from = eject_keyframes[keyframe];
+                            let to = eject_keyframes[keyframe + 1];
+                            let orientation = from.nlerp(to, t);
+
+                            revolver_body.group.set_orientation(orientation);
+                        }
                     }
 
                     // Update the render state of the cartridges in the cylinder.
@@ -544,8 +604,10 @@ fn main() {
                             },
 
                             None => {
-                                if let Some(_) = chamber.cartridge.take() {
-                                    unimplemented!("Remove cartridge if necessary");
+                                if let Some(bullet_group) = chamber.cartridge.take() {
+                                    // TODO: Recyle `bullet_group` instead of letting it be
+                                    // destroyed.
+                                    chamber.node.group.remove(&bullet_group);
                                 }
                             },
                         }

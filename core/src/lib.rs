@@ -137,6 +137,17 @@ impl Player {
                     }
                 }
             }
+
+            RevolverAction::EjectCartridges => if self.gun.is_cylinder_open() {
+                let rotation = self.gun.cylinder_state.rotation();
+
+                // Begin the eject animation.
+                self.gun.cylinder_state = CylinderState::Ejecting {
+                    rotation,
+                    keyframe: 0,
+                    remaining: Duration::from_millis(EJECT_KEYFRAME_MILLIS[0]),
+                };
+            }
         }
     }
 
