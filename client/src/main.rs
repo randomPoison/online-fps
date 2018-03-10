@@ -413,8 +413,45 @@ fn main() {
                         .get_mut(&state.id)
                         .expect("Couldn't find player in local state");
                     for &(_, ref input) in &state.input_history {
+                        // Step the player's overall position and orientation for one frame.
                         player.step(input, window.input.delta_time());
-                        // player.gun.step(::std::time::Duration::from_secs(1) / 60);
+
+                        // Step the player's gun for one frame, beginning the recoil animation
+                        // if the player fired their gun.
+                        if player.gun.step(::std::time::Duration::from_secs(1) / 60) {
+                            // If there is already a recoil animation happening, we reset the
+                            // velocities but preserve the current offsets, which allows us to
+                            // smoothly restart the animation without any jumps.
+                            let recoil = state.recoil_anim.unwrap_or_default();
+                            state.recoil_anim = Some(Recoil {
+                                look_velocity: Vector3::new(10.0, 1.0, 0.0),
+                                gun_velocity: Vector3::new(20.0, -3.0, 0.0),
+
+                                .. recoil
+                            });
+                        }
+
+                        // Step the recoil animation, if necessary.
+                        if let Some(mut recoil) = state.recoil_anim {
+                            // Apply angular velocity to the current offsets.
+                            recoil.look_offset += recoil.look_velocity * window.input.delta_time();
+                            recoil.gun_offset += recoil.gun_velocity * window.input.delta_time();
+
+                            // Apply drag to the angular velocities.
+                            recoil.look_velocity += (-recoil.look_offset * 400.0 - recoil.look_velocity * 30.0) * window.input.delta_time();
+                            recoil.gun_velocity += (-recoil.gun_offset * 400.0 - recoil.gun_velocity * 30.0) * window.input.delta_time();
+
+                            // Check if recoil has ended.
+                            if relative_eq!(recoil.look_offset.magnitude2(), 0.0)
+                                && relative_eq!(recoil.look_velocity.magnitude2(), 0.0)
+                                && relative_eq!(recoil.gun_offset.magnitude2(), 0.0)
+                                && relative_eq!(recoil.gun_velocity.magnitude2(), 0.0)
+                            {
+                                state.recoil_anim = None;
+                            } else {
+                                state.recoil_anim = Some(recoil);
+                            }
+                        }
                     }
 
                     // TODO: Simulate forward for the other players.
@@ -433,8 +470,32 @@ fn main() {
 
                 // Update the render state for the local player.
                 if let Some(player) = state.local_world.players.get(&state.id) {
+                    // Update the player's position.
                     player_group.set_position(player.position);
-                    player_group.set_orientation(player.orientation());
+
+                    // Update the player's root orientation, applying recoil if necessary.
+                    match state.recoil_anim {
+                        Some(recoil) => {
+                            // Recalculate pitch and yaw to take the recoil animation into account.
+                            let pitch = player.pitch + recoil.look_offset.x;
+                            let yaw = player.yaw + recoil.look_offset.y;
+
+                            player_group.set_orientation(core::orientation(pitch, yaw));
+
+                            revolver_body.group.set_orientation(core::orientation(
+                                recoil.gun_offset.x,
+                                recoil.gun_offset.y,
+                            ));
+                        }
+
+                        None => {
+                            player_group.set_orientation(player.orientation());
+                            revolver_body.group.set_orientation(core::orientation(0.0, 0.0));
+                        }
+                    }
+
+                    // Update the render state of the hammer.
+                    // --------------------------------------
 
                     let uncocked_orientation = Quaternion::from(Euler::new(
                         Rad(0.0),
@@ -466,7 +527,7 @@ fn main() {
                             hammer.group.set_orientation(cocked_orientation);
                         }
 
-                        HammerState::Uncocking { remaining } => {
+                        HammerState::Firing { remaining } => {
                             let remaining_millis = remaining.as_millis();
                             let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
                             hammer.group.set_orientation(
@@ -654,6 +715,7 @@ fn main() {
 
                         input_history: VecDeque::new(),
                         local_world: world.clone(),
+                        recoil_anim: None,
 
                         server_world: world,
                         latest_server_frame,
@@ -686,6 +748,8 @@ struct GameState {
 
     /// The local world state, derived by simulating forward from the most recent server state.
     local_world: World,
+
+    recoil_anim: Option<Recoil>,
 
     // Server state.
     // =============
@@ -745,6 +809,36 @@ impl Chamber {
         Chamber {
             node,
             cartridge: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Recoil {
+    /// The visual offset from the "true" look direction.
+    look_offset: Vector3<f32>,
+
+    /// The gun's rotational offset from the "true" orientation.
+    gun_offset: Vector3<f32>,
+
+    /// The current angular velocity of the recoil around each axis for the overall view direction.
+    ///
+    /// Given in radians per second.
+    look_velocity: Vector3<f32>,
+
+    /// The current angular velocity of the recoil around each axis for the gun's orientation.
+    ///
+    /// Given in radians per second.
+    gun_velocity: Vector3<f32>,
+}
+
+impl Default for Recoil {
+    fn default() -> Self {
+        Recoil {
+            look_offset: Vector3::new(0.0, 0.0, 0.0),
+            gun_offset: Vector3::new(0.0, 0.0, 0.0),
+            look_velocity: Vector3::new(0.0, 0.0, 0.0),
+            gun_velocity: Vector3::new(0.0, 0.0, 0.0),
         }
     }
 }

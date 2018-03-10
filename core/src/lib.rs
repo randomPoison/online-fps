@@ -73,7 +73,7 @@ impl Player {
     /// `delta` is in seconds.
     pub fn step(&mut self, input: &InputFrame, delta: f32) {
         // Apply input to orientation.
-        self.yaw += input.yaw_delta;
+        self.yaw = (self.yaw + input.yaw_delta) % TAU;
 
         self.pitch = (self.pitch - input.pitch_delta).clamp(-PI, PI);
 
@@ -91,7 +91,7 @@ impl Player {
     pub fn handle_revolver_action(&mut self, action: RevolverAction) {
         match action {
             RevolverAction::PullTrigger => if self.gun.is_hammer_cocked() {
-                self.gun.hammer_state = HammerState::Uncocking {
+                self.gun.hammer_state = HammerState::Firing {
                     remaining: Duration::from_millis(HAMMER_FALL_MILLIS),
                 };
             }
@@ -152,9 +152,7 @@ impl Player {
     }
 
     pub fn orientation(&self) -> Quaternion<f32> {
-        let yaw_rot = Quaternion::from(Euler::new(Rad(0.0), Rad(self.yaw), Rad(0.0)));
-        let pitch_rot = Quaternion::from(Euler::new(Rad(self.pitch), Rad(0.0), Rad(0.0)));
-        yaw_rot * pitch_rot
+        orientation(self.pitch, self.yaw)
     }
 
     pub fn yaw_orientation(&self) -> Euler<Rad<f32>> {
@@ -292,4 +290,10 @@ pub struct ClientMessage {
 pub enum ClientMessageBody {
     Input(InputFrame),
     RevolverAction(RevolverAction),
+}
+
+pub fn orientation(pitch: f32, yaw: f32) -> Quaternion<f32> {
+    let yaw_rot = Quaternion::from(Euler::new(Rad(0.0), Rad(yaw), Rad(0.0)));
+    let pitch_rot = Quaternion::from(Euler::new(Rad(pitch), Rad(0.0), Rad(0.0)));
+    yaw_rot * pitch_rot
 }

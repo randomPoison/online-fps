@@ -14,6 +14,7 @@ use core::math::*;
 use futures::{Async, Future, Sink, Stream};
 use futures::executor;
 use futures::sync::mpsc;
+use rand::Rng;
 use std::io;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -195,8 +196,16 @@ fn main() {
             let player = world.players.get_mut(&client.id).expect("No player for id");
             player.step(&client.input, delta);
 
-            // Tick the player's revolver.
-            player.gun.step(target_frame_time);
+            // Tick the player's revolver, spawning a bullet and animating the recoil if it fired.
+            if player.gun.step(target_frame_time) {
+                // TODO: Spawn a bullet at the current trajectory of the gun.
+
+                // Apply recoil to the player's current aim.
+                let pitch_delta = rand::weak_rng().gen_range::<f32>(0.0, PI / 2.0 * 0.05);
+                let yaw_delta = rand::weak_rng().gen_range::<f32>(-PI * 0.001, PI * 0.001);
+                player.pitch = (player.pitch + pitch_delta).clamp(-PI, PI);
+                player.yaw = (player.yaw + yaw_delta) % TAU;
+            }
         }
 
         // Remove any clients that have disconnected.

@@ -23,9 +23,12 @@ pub struct Revolver {
 }
 
 impl Revolver {
-    pub fn step(&mut self, delta: Duration) {
+    /// Step the revolver for a single frame, returning whether or not it was fired.
+    ///
+    /// Returns `true` if the revolver was fired and a bullet should be spawned, false otherwise.
+    pub fn step(&mut self, delta: Duration) -> bool {
         // Update the hammer's animation, if necessary.
-        match self.hammer_state {
+        let fired = match self.hammer_state {
             HammerState::Cocking { remaining } => {
                 match remaining.checked_sub(delta) {
                     Some(remaining) => { self.hammer_state = HammerState::Cocking { remaining }; }
@@ -34,20 +37,35 @@ impl Revolver {
                         self.hammer_state = HammerState::Cocked;
                     }
                 }
+
+                false
             }
 
-            HammerState::Uncocking { remaining } => {
+            HammerState::Firing { remaining } => {
                 match remaining.checked_sub(delta) {
-                    Some(remaining) => { self.hammer_state = HammerState::Uncocking { remaining }; }
+                    Some(remaining) => {
+                        self.hammer_state = HammerState::Firing { remaining };
+                        false
+                    }
 
                     None => {
                         self.hammer_state = HammerState::Uncocked;
+
+                        // Check the cartridge in the current chamber, and fire it if it is fresh.
+                        match self.current_cartridge() {
+                            Some(Cartridge::Fresh) => {
+                                self.set_current_cartridge(Some(Cartridge::Spent));
+                                true
+                            }
+
+                            _ => false,
+                        }
                     }
                 }
             }
 
-            _ => {}
-        }
+            _ => false,
+        };
 
         // Update the cylinder's animation, if necessary.
         match self.cylinder_state {
@@ -110,6 +128,8 @@ impl Revolver {
 
             _ => {}
         }
+
+        fired
     }
 
     /// Rotates the cylinder to the next position.
@@ -188,7 +208,7 @@ pub enum HammerState {
 
     Cocked,
 
-    Uncocking {
+    Firing {
         remaining: Duration,
     },
 }
