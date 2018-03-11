@@ -161,7 +161,7 @@ impl Player {
 }
 
 /// Represents the input received on a single frame of the game.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputFrame {
     /// Movement input is given as a 2D vector, where up on the input is the positive Y axis, and
     /// right on the input is the positive X axis.
@@ -172,6 +172,10 @@ pub struct InputFrame {
 
     /// The change in pitch for the current frame, in radians.
     pub pitch_delta: f32,
+
+    /// Any inputs corresponding to revolver actions.
+    // TODO: Can we maybe do this without allocating every frame?
+    pub revolver_actions: Vec<RevolverAction>,
 }
 
 impl Default for InputFrame {
@@ -180,6 +184,7 @@ impl Default for InputFrame {
             movement_dir: Vector2::new(0.0, 0.0),
             yaw_delta: 0.0,
             pitch_delta: 0.0,
+            revolver_actions: Vec::new(),
         }
     }
 }

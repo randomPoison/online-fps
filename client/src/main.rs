@@ -263,6 +263,8 @@ fn main() {
 
                     // TODO: This should be a send-reliable.
                     state.sender.start_send(message).expect("Failed to start send");
+
+                    input_state.revolver_actions.push(RevolverAction::PullTrigger);
                 }
 
                 // Right mouse button pulls the hammer.
@@ -275,6 +277,8 @@ fn main() {
 
                     // TODO: This should be a send-reliable.
                     state.sender.start_send(message).expect("Failed to start send");
+
+                    input_state.revolver_actions.push(RevolverAction::PullHammer);
                 }
 
                 // Left shift opens and closes the cylinder.
@@ -287,6 +291,8 @@ fn main() {
 
                     // TODO: This should be a send-reliable.
                     state.sender.start_send(message).expect("Failed to start send");
+
+                    input_state.revolver_actions.push(RevolverAction::ToggleCylinder);
                 }
 
                 // `R` key loads a cartridge into the cylinder.
@@ -302,6 +308,8 @@ fn main() {
 
                         // TODO: This should be a send-reliable.
                         state.sender.start_send(message).expect("Failed to start send");
+
+                        input_state.revolver_actions.push(RevolverAction::LoadCartridge);
                     }
                 } else {
                     r_pressed = false;
@@ -316,6 +324,8 @@ fn main() {
 
                     // TODO: This should be a send-reliable.
                     state.sender.start_send(message).expect("Failed to start send");
+
+                    input_state.revolver_actions.push(RevolverAction::EjectCartridges);
                 }
 
                 // Get input from mouse movement.
@@ -324,12 +334,12 @@ fn main() {
                 input_state.pitch_delta = mouse_delta.y * TAU * 0.001;
 
                 // Push the current input state into the frame history.
-                state.input_history.push_back((frame_count, input_state));
+                state.input_history.push_back((frame_count, input_state.clone()));
 
                 // Send the current input state to the server.
                 let message = ClientMessage {
                     frame: frame_count,
-                    body: ClientMessageBody::Input(input_state.clone()),
+                    body: ClientMessageBody::Input(input_state),
                 };
                 state.sender.start_send(message).expect("Failed to start send");
 
@@ -415,6 +425,11 @@ fn main() {
                     for &(_, ref input) in &state.input_history {
                         // Step the player's overall position and orientation for one frame.
                         player.step(input, window.input.delta_time());
+
+                        // Replay any revolver actions for the frame.
+                        for action in &input.revolver_actions {
+                            player.handle_revolver_action(*action);
+                        }
 
                         // Step the player's gun for one frame, beginning the recoil animation
                         // if the player fired their gun.
