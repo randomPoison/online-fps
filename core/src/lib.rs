@@ -75,7 +75,7 @@ impl Player {
         // Apply input to orientation.
         self.yaw = (self.yaw + input.yaw_delta) % TAU;
 
-        self.pitch = (self.pitch - input.pitch_delta).clamp(-PI, PI);
+        self.pitch = (self.pitch - input.pitch_delta).clamp(-PI / 2.0, PI / 2.0);
 
         // Determine the forward and right vectors based on the current yaw.
         let orientation = Basis3::from(self.yaw_orientation());

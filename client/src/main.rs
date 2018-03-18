@@ -1,3 +1,8 @@
+// If the "no_console" feature is enabled, we set the windows subsystem to "windows" so that
+// running the game doesn't allocate a console window. This will disable all console logging,
+// so this feature is disabled by default to help with development.
+#![cfg_attr(feature = "no_console", windows_subsystem = "windows")]
+
 extern crate core;
 extern crate futures;
 #[macro_use]
@@ -20,6 +25,7 @@ use std::thread;
 use sumi::Connection;
 use three::{
     CursorState,
+    Factory,
     Gltf,
     GltfNodeInstance,
     GltfSceneInstance,
@@ -28,6 +34,7 @@ use three::{
     MouseButton,
     Object,
 };
+use three::camera::Camera;
 use tokio_core::reactor::Core;
 
 fn main() {
@@ -121,30 +128,25 @@ fn main() {
     let mut game_state: Option<GameState> = None;
     let mut input_state;
 
-    // Setup the camera and mesh data for the renderer.
-    // ================================================
-
-    // Create a group for all of the player's parts.
-    let player_group = window.factory.group();
-    window.scene.add(&player_group);
-
-    // Create the camera.
-    let camera = window.factory.perspective_camera(60.0, 0.1 .. 100.0);
-    camera.set_orientation(Quaternion::look_at(Vector3::new(0.0, 0.0, 1.0), Vector3::new(0.0, 1.0, 0.0)));
-    player_group.add(&camera);
-
-    // Load the revolver model and add it to the scene.
+    // Load the revolver model.
     let revolver_path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../assets/revolver/revolver-python.gltf",
     );
     let revolver_source = window.factory.load_gltf(revolver_path);
 
+    // Load the bullet model.
     let bullet_path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../assets/revolver/bullet-9mm.gltf",
     );
     let bullet_source = window.factory.load_gltf(bullet_path);
+
+    let biped_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../assets/biped.gltf",
+    );
+    let biped_source = window.factory.load_gltf(biped_path);
 
     let eject_keyframes = [
         Quaternion::from(Euler::new(
@@ -174,44 +176,6 @@ fn main() {
 
     let static_revolver = window.factory.instantiate_gltf_scene(&bullet_source, 0);
     window.scene.add(&static_revolver.root_group);
-
-    let revolver = window.factory.instantiate_gltf_scene(&revolver_source, 0);
-    player_group.add(&revolver.root_group);
-
-    // Retreive the node for the revolver's cylinder.
-    let cylinder_index = revolver_source.node_index_for_name("Cylinder").unwrap();
-    let cylinder = revolver.nodes[&cylinder_index].clone();
-
-    // Retreive the nodes that mark each of the chambers in the cylinder.
-    let mut chambers = [
-        Chamber::from_gltf(&revolver_source, &revolver, "Chamber 0"),
-        Chamber::from_gltf(&revolver_source, &revolver, "Chamber 1"),
-        Chamber::from_gltf(&revolver_source, &revolver, "Chamber 2"),
-        Chamber::from_gltf(&revolver_source, &revolver, "Chamber 3"),
-        Chamber::from_gltf(&revolver_source, &revolver, "Chamber 4"),
-        Chamber::from_gltf(&revolver_source, &revolver, "Chamber 5"),
-    ];
-
-    // Retreive the root node for the revolver in the scene.
-    let body_index = revolver_source.node_index_for_name("Body").unwrap();
-    let revolver_body = revolver.nodes[&body_index].clone();
-
-    // Retreive the pivot for the revolver's cylinder.
-    let pivot_index = revolver_source.node_index_for_name("Cylinder Pivot").unwrap();
-    let pivot = revolver.nodes[&pivot_index].clone();
-
-    // Retreive the node for the revolver's hammer.
-    let hammer_index = revolver_source.node_index_for_name("Hammer").unwrap();
-    let hammer = revolver.nodes[&hammer_index].clone();
-
-    // Build a box mesh.
-    let geometry = three::Geometry::cuboid(1.0, 1.0, 1.0);
-
-    // Create a default material for the objects in the scene.
-    let material = three::material::Basic {
-        color: 0xFFFF00,
-        .. Default::default()
-    };
 
     // HACK: We need to track which frame a button was pressed/released because three does not
     // yet do that itself.
@@ -375,11 +339,11 @@ fn main() {
                             debug!("Player joined, ID: {:#x}, state: {:?}", id, player);
 
                             // Create renderer resources for the new player.
-                            let render_state = create_player_render(
+                            let render_state = RenderState::new(
                                 &mut window,
-                                geometry.clone(),
-                                material.clone(),
                                 &player,
+                                &revolver_source,
+                                &biped_source,
                             );
                             trace!("Created render state for player {:#x}: {:?}", id, render_state);
                             state.render_state.insert(id, render_state);
@@ -410,6 +374,8 @@ fn main() {
                     state.input_history.pop_front();
                 }
 
+                let empty_input = InputFrame::default();
+
                 // If we've received updated info from the server, we need to re-simulate the local
                 // state to sync up with the expected current state of the server.
                 if received_message {
@@ -418,294 +384,95 @@ fn main() {
 
                     // Replay the frame history on top of the server state to derive a new
                     // local state.
-                    let player = state.local_world
-                        .players
-                        .get_mut(&state.id)
-                        .expect("Couldn't find player in local state");
                     for &(_, ref input) in &state.input_history {
-                        // Step the player's overall position and orientation for one frame.
-                        player.step(input, window.input.delta_time());
+                        for (id, player) in &mut state.local_world.players {
+                            let player_render = &mut state
+                                .render_state
+                                .get_mut(id)
+                                .expect("No render state for local player");
 
-                        // Replay any revolver actions for the frame.
-                        for action in &input.revolver_actions {
-                            player.handle_revolver_action(*action);
-                        }
-
-                        // Step the player's gun for one frame, beginning the recoil animation
-                        // if the player fired their gun.
-                        if player.gun.step(::std::time::Duration::from_secs(1) / 60) {
-                            // If there is already a recoil animation happening, we reset the
-                            // velocities but preserve the current offsets, which allows us to
-                            // smoothly restart the animation without any jumps.
-                            let recoil = state.recoil_anim.unwrap_or_default();
-                            state.recoil_anim = Some(Recoil {
-                                look_velocity: Vector3::new(10.0, 1.0, 0.0),
-                                gun_velocity: Vector3::new(20.0, -3.0, 0.0),
-
-                                .. recoil
-                            });
-                        }
-
-                        // Step the recoil animation, if necessary.
-                        if let Some(mut recoil) = state.recoil_anim {
-                            // Apply angular velocity to the current offsets.
-                            recoil.look_offset += recoil.look_velocity * window.input.delta_time();
-                            recoil.gun_offset += recoil.gun_velocity * window.input.delta_time();
-
-                            // Apply drag to the angular velocities.
-                            recoil.look_velocity += (-recoil.look_offset * 400.0 - recoil.look_velocity * 30.0) * window.input.delta_time();
-                            recoil.gun_velocity += (-recoil.gun_offset * 400.0 - recoil.gun_velocity * 30.0) * window.input.delta_time();
-
-                            // Check if recoil has ended.
-                            if relative_eq!(recoil.look_offset.magnitude2(), 0.0)
-                                && relative_eq!(recoil.look_velocity.magnitude2(), 0.0)
-                                && relative_eq!(recoil.gun_offset.magnitude2(), 0.0)
-                                && relative_eq!(recoil.gun_velocity.magnitude2(), 0.0)
-                            {
-                                state.recoil_anim = None;
+                            if *id == state.id {
+                                // We're updating the local player, so apply the saved input history.
+                                step(
+                                    player,
+                                    player_render,
+                                    input,
+                                    window.input.delta_time(),
+                                );
                             } else {
-                                state.recoil_anim = Some(recoil);
+                                // We're updating a remote player, so apply the default (empty) input.
+                                step(
+                                    player,
+                                    player_render,
+                                    &empty_input,
+                                    window.input.delta_time(),
+                                );
                             }
                         }
                     }
-
-                    // TODO: Simulate forward for the other players.
                 } else {
-                    // We haven't received a new frame from the server, so we only simulate a
-                    // single frame on top of the current state.
-                    let player = state.local_world
-                        .players
-                        .get_mut(&state.id)
-                        .expect("Couldn't find player in local state");
-                    let &(_, ref input) = state.input_history
-                        .back()
-                        .expect("Input history is empty");
-                    player.step(input, window.input.delta_time());
-                }
+                    // Apply the most recent frame of input to the local player, and step all other
+                    // players by one frame.
+                    for (id, player) in &mut state.local_world.players {
+                        let player_render = &mut state
+                            .render_state
+                            .get_mut(id)
+                            .expect("No render state for local player");
 
-                // Update the render state for the local player.
-                if let Some(player) = state.local_world.players.get(&state.id) {
-                    // Update the player's position.
-                    player_group.set_position(player.position);
-
-                    // Update the player's root orientation, applying recoil if necessary.
-                    match state.recoil_anim {
-                        Some(recoil) => {
-                            // Recalculate pitch and yaw to take the recoil animation into account.
-                            let pitch = player.pitch + recoil.look_offset.x;
-                            let yaw = player.yaw + recoil.look_offset.y;
-
-                            player_group.set_orientation(core::orientation(pitch, yaw));
-
-                            revolver_body.group.set_orientation(core::orientation(
-                                recoil.gun_offset.x,
-                                recoil.gun_offset.y,
-                            ));
-                        }
-
-                        None => {
-                            player_group.set_orientation(player.orientation());
-                            revolver_body.group.set_orientation(core::orientation(0.0, 0.0));
-                        }
-                    }
-
-                    // Update the render state of the hammer.
-                    // --------------------------------------
-
-                    let uncocked_orientation = Quaternion::from(Euler::new(
-                        Rad(0.0),
-                        Rad(0.0),
-                        Rad(0.0),
-                    ));
-
-                    let cocked_orientation = Quaternion::from(Euler::new(
-                        Rad(PI / 6.0),
-                        Rad(0.0),
-                        Rad(0.0),
-                    ));
-
-                    // Set the orientation of the hammer based on the hammer state.
-                    match player.gun.hammer_state {
-                        HammerState::Uncocked => {
-                            hammer.group.set_orientation(uncocked_orientation);
-                        }
-
-                        HammerState::Cocking { remaining } => {
-                            let remaining_millis = remaining.as_millis();
-                            let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
-                            hammer.group.set_orientation(
-                                uncocked_orientation.nlerp(cocked_orientation, t),
+                        if *id == state.id {
+                            let &(_, ref input) = state.input_history
+                                .back()
+                                .expect("Input history is empty");
+                            // We're updating the local player, so apply the saved input history.
+                            step(
+                                player,
+                                player_render,
+                                input,
+                                window.input.delta_time(),
                             );
-                        }
-
-                        HammerState::Cocked => {
-                            hammer.group.set_orientation(cocked_orientation);
-                        }
-
-                        HammerState::Firing { remaining } => {
-                            let remaining_millis = remaining.as_millis();
-                            let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
-                            hammer.group.set_orientation(
-                                cocked_orientation.nlerp(uncocked_orientation, t),
+                        } else {
+                            // We're updating a remote player, so apply the default (empty) input.
+                            step(
+                                player,
+                                player_render,
+                                &empty_input,
+                                window.input.delta_time(),
                             );
                         }
                     }
-
-                    // Update the render state of the cylinder.
-                    // ----------------------------------------
-
-                    let closed_orientation = Quaternion::from(Euler::new(
-                        Rad(0.0),
-                        Rad(0.0),
-                        Rad(0.0),
-                    ));
-
-                    let open_orientation = Quaternion::from(Euler::new(
-                        Rad(0.0),
-                        Rad(0.0),
-                        Rad(PI / 2.0),
-                    ));
-
-                    match player.gun.cylinder_state {
-                        // If the cylinder is closed, use the current cylinder position, taking
-                        // into account the hammer animation if necessary.
-                        CylinderState::Closed { position } => {
-                            let cylinder_orientation = Quaternion::from(Euler::new(
-                                Rad(0.0),
-                                Rad(0.0),
-                                Rad(TAU / 6.0 * position as f32),
-                            ));
-                            match player.gun.hammer_state {
-                                // If the hammer is cocking, we animate the rotation of the cylinder as it
-                                // rotates to the current position.
-                                HammerState::Cocking { remaining } => {
-                                    let prev_orientation = Quaternion::from(Euler::new(
-                                        Rad(0.0),
-                                        Rad(0.0),
-                                        Rad(TAU / 6.0 * (position as f32 - 1.0)),
-                                    ));
-
-                                    let remaining_millis = remaining.as_millis();
-                                    let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
-
-                                    let orientation = prev_orientation.nlerp(cylinder_orientation, t);
-                                    cylinder.group.set_orientation(orientation);
-                                }
-
-                                // For all other hammer state, the cylinder is static at its current
-                                // position.
-                                _ => {
-                                    cylinder.group.set_orientation(cylinder_orientation);
-                                }
-                            }
-                        }
-
-                        CylinderState::Opening { remaining, rotation } => {
-                            // Lerp the cylinder opening.
-                            let remaining_millis = remaining.as_millis();
-                            let t = 1.0 - (remaining_millis as f32 / CYLINDER_OPEN_MILLIS as f32);
-                            pivot.group.set_orientation(
-                                closed_orientation.nlerp(open_orientation, t),
-                            );
-
-                            cylinder.group.set_orientation(Quaternion::from(Euler::new(
-                                Rad(0.0),
-                                Rad(0.0),
-                                Rad(TAU * rotation / 6.0),
-                            )));
-                        }
-
-                        CylinderState::Open { rotation } => {
-                            pivot.group.set_orientation(open_orientation);
-
-                            cylinder.group.set_orientation(Quaternion::from(Euler::new(
-                                Rad(0.0),
-                                Rad(0.0),
-                                Rad(TAU * rotation / 6.0),
-                            )));
-                        }
-
-                        CylinderState::Closing { remaining, rotation } => {
-                            // Lerp the cylinder closing.
-                            let remaining_millis = remaining.as_millis();
-                            let t = 1.0 - (remaining_millis as f32 / CYLINDER_OPEN_MILLIS as f32);
-                            pivot.group.set_orientation(
-                                open_orientation.nlerp(closed_orientation, t),
-                            );
-
-                            cylinder.group.set_orientation(Quaternion::from(Euler::new(
-                                Rad(0.0),
-                                Rad(0.0),
-                                Rad(TAU * rotation / 6.0),
-                            )));
-                        }
-
-                        CylinderState::Ejecting { remaining, keyframe, rotation } => {
-                            // Make sure cylinder rotation is correct.
-                            cylinder.group.set_orientation(Quaternion::from(Euler::new(
-                                Rad(0.0),
-                                Rad(0.0),
-                                Rad(TAU * rotation / 6.0),
-                            )));
-
-                            let remaining_millis = remaining.as_millis();
-                            let duration = EJECT_KEYFRAME_MILLIS[keyframe];
-                            let t = 1.0 - (remaining_millis as f32 / duration as f32);
-
-                            let from = eject_keyframes[keyframe];
-                            let to = eject_keyframes[keyframe + 1];
-                            let orientation = from.nlerp(to, t);
-
-                            revolver_body.group.set_orientation(orientation);
-                        }
-                    }
-
-                    // Update the render state of the cartridges in the cylinder.
-                    for chamber_index in 0 .. 6 {
-                        let chamber = &mut chambers[chamber_index];
-                        match player.gun.cartridges[chamber_index] {
-                            Some(..) => {
-                                // If there's not already a cartridge instance in the scene
-                                // for the current chamber, add one.
-                                if chamber.cartridge.is_none() {
-                                    // TODO: Don't create a new bullet instance every time, pool
-                                    // objects and reuse them.
-                                    let bullet = window.factory.instantiate_gltf_scene(&bullet_source, 0);
-
-                                    // Add the bullet instance to the scene.
-                                    chamber.node.group.add(&bullet.root_group);
-
-                                    chamber.cartridge = Some(bullet.root_group.clone());
-                                }
-                            },
-
-                            None => {
-                                if let Some(bullet_group) = chamber.cartridge.take() {
-                                    // TODO: Recyle `bullet_group` instead of letting it be
-                                    // destroyed.
-                                    chamber.node.group.remove(&bullet_group);
-                                }
-                            },
-                        }
-                    }
-                } else {
-                    warn!("Local player wasn't in local state???");
                 }
 
                 // Update the render state for all players.
-                for (&id, player) in &state.local_world.players {
-                    if let Some(render_state) = state.render_state.get_mut(&id) {
-                        trace!(
-                            "Updating render state for player {:?}, local state: {:?}, render state: {:?}",
-                            id,
-                            player,
-                            render_state,
-                        );
-                        render_state.mesh.set_position(player.position);
-                        // TODO: Update the player's orientation to match the pitch and yaw.
-                    } else if id != state.id {
-                        warn!("Player {:?} is in local state but has no render state", id);
+                for (id, player) in &state.local_world.players {
+                    match state.render_state.get_mut(id) {
+                        Some(render_state) => {
+                            trace!(
+                                "Updating render state for player {:?}, local state: {:?}, render state: {:?}",
+                                id,
+                                player,
+                                render_state,
+                            );
+                            render_state.update(
+                                player,
+                                &eject_keyframes,
+                                &bullet_source,
+                                &mut window.factory,
+                            );
+                        }
+
+                        None => {
+                            warn!("Player {:?} is in local state but has no render state", id);
+                        }
                     }
+                }
+
+                // Render the scene from the local player's perspective.
+                // TODO: What should we render if there's no local player? Right now we only
+                // render once we've fully initialized and have received the player's state from
+                // the server.
+                {
+                    let player_render = &state.render_state[&state.id];
+                    window.render(&player_render.camera);
                 }
 
                 game_state = Some(state);
@@ -720,17 +487,39 @@ fn main() {
 
                     // Create a player avatar in the scene with the player information.
                     // ================================================================
+                    let mut render_state = HashMap::new();
+
+                    for (player_id, player) in &world.players {
+                        debug!("Initializing player visuals, ID: {:#x}, state: {:?}", player_id, player);
+
+                        // Create renderer resources for the new player.
+                        let player_render = RenderState::new(
+                            &mut window,
+                            &player,
+                            &revolver_source,
+                            &biped_source,
+                        );
+                        trace!("Created render state for player {:#x}: {:?}", player_id, player_render);
+                        render_state.insert(*player_id, player_render);
+                    }
+
+                    // Disable rendering of the local player's body.
+                    {
+                        let player_render = &render_state[&id];
+                        for mesh in &player_render.torso.meshes {
+                            mesh.set_visible(false);
+                        }
+                    }
 
                     game_state = Some(GameState {
                         id,
                         sender,
                         receiver,
 
-                        render_state: HashMap::new(),
+                        render_state,
 
                         input_history: VecDeque::new(),
                         local_world: world.clone(),
-                        recoil_anim: None,
 
                         server_world: world,
                         latest_server_frame,
@@ -739,9 +528,6 @@ fn main() {
                 }
             }
         }
-
-        // Render the mesh.
-        window.render(&camera);
     }
 }
 
@@ -764,8 +550,6 @@ struct GameState {
     /// The local world state, derived by simulating forward from the most recent server state.
     local_world: World,
 
-    recoil_anim: Option<Recoil>,
-
     // Server state.
     // =============
 
@@ -786,27 +570,315 @@ struct GameState {
 
 #[derive(Debug)]
 struct RenderState {
-    group: three::Group,
-    mesh: three::Mesh,
+    root: Group,
+
+    revolver: GltfSceneInstance,
+    chambers: [Chamber; 6],
+    revolver_body: GltfNodeInstance,
+    cylinder: GltfNodeInstance,
+    pivot: GltfNodeInstance,
+    hammer: GltfNodeInstance,
+
+    body: GltfSceneInstance,
+    torso: GltfNodeInstance,
+    head: GltfNodeInstance,
+
+    camera: Camera,
+
+    recoil_anim: Option<Recoil>,
 }
 
-fn create_player_render<M: Into<three::Material>>(
-    window: &mut three::Window,
-    geometry: three::Geometry,
-    material: M,
-    player: &Player,
-) -> RenderState {
-    let group = window.factory.group();
-    window.scene.add(&group);
+impl RenderState {
+    fn new(
+        window: &mut three::Window,
+        player: &Player,
+        revolver_source: &Gltf,
+        body_source: &Gltf,
+    ) -> RenderState {
+        // Create a group for all of the player's parts.
+        let root = window.factory.group();
+        window.scene.add(&root);
 
-    let mesh = window.factory.mesh(geometry, material);
-    group.add(&mesh);
-    mesh.set_position(player.position);
-    // TODO: Set the player's orientation to match the current pitch and yaw.
+        root.set_position(player.position);
 
-    RenderState {
-        group,
-        mesh,
+        // TODO: Set the initial orientation of the player.
+
+        // Instantiate a body for the player.
+        let body = window.factory.instantiate_gltf_scene(&body_source, 0);
+        root.add(&body.root_group);
+
+        let head_index = body_source.node_index_for_name("Head").unwrap();
+        let head = body.nodes[&head_index].clone();
+
+        let torso_index = body_source.node_index_for_name("Body").unwrap();
+        let torso = body.nodes[&torso_index].clone();
+
+        // Instantiate a revolver for the player.
+        let revolver = window.factory.instantiate_gltf_scene(&revolver_source, 0);
+        head.group.add(&revolver.root_group);
+
+        // Retreive the node for the revolver's cylinder.
+        let cylinder_index = revolver_source.node_index_for_name("Cylinder").unwrap();
+        let cylinder = revolver.nodes[&cylinder_index].clone();
+
+        // Retreive the nodes that mark each of the chambers in the cylinder.
+        let chambers = [
+            Chamber::from_gltf(&revolver_source, &revolver, "Chamber 0"),
+            Chamber::from_gltf(&revolver_source, &revolver, "Chamber 1"),
+            Chamber::from_gltf(&revolver_source, &revolver, "Chamber 2"),
+            Chamber::from_gltf(&revolver_source, &revolver, "Chamber 3"),
+            Chamber::from_gltf(&revolver_source, &revolver, "Chamber 4"),
+            Chamber::from_gltf(&revolver_source, &revolver, "Chamber 5"),
+        ];
+
+        // Retreive the root node for the revolver in the scene.
+        let revolver_body_index = revolver_source.node_index_for_name("Body").unwrap();
+        let revolver_body = revolver.nodes[&revolver_body_index].clone();
+
+        // Retreive the pivot for the revolver's cylinder.
+        let pivot_index = revolver_source.node_index_for_name("Cylinder Pivot").unwrap();
+        let pivot = revolver.nodes[&pivot_index].clone();
+
+        // Retreive the node for the revolver's hammer.
+        let hammer_index = revolver_source.node_index_for_name("Hammer").unwrap();
+        let hammer = revolver.nodes[&hammer_index].clone();
+
+        let camera_index = revolver_source.node_index_for_name("Correction_Camera").unwrap();
+        let camera = revolver.nodes[&camera_index].camera.clone().unwrap();
+
+        RenderState {
+            root,
+
+            revolver,
+            revolver_body,
+            cylinder,
+            chambers,
+            pivot,
+            hammer,
+
+            body,
+            torso,
+            head,
+
+            camera,
+
+            recoil_anim: None,
+        }
+    }
+
+    fn update(
+        &mut self,
+        player: &Player,
+        eject_keyframes: &[Quaternion<f32>; 4],
+        bullet_source: &Gltf,
+        factory: &mut Factory,
+    ) {
+        // Update the player's position.
+        self.root.set_position(player.position);
+
+        // Rotate the whole player to match the current yaw.
+        self.root.set_orientation(core::orientation(0.0, player.yaw));
+
+        // Update the player's root orientation, applying recoil if necessary.
+        match self.recoil_anim {
+            Some(recoil) => {
+                // Recalculate pitch and yaw to take the recoil animation into account.
+                let pitch = player.pitch + recoil.look_offset.x;
+                let yaw = recoil.look_offset.y;
+
+                self.head.group.set_orientation(core::orientation(pitch, yaw));
+
+                self.revolver_body.group.set_orientation(core::orientation(
+                    recoil.gun_offset.x,
+                    recoil.gun_offset.y,
+                ));
+            }
+
+            None => {
+                self.head.group.set_orientation(core::orientation(player.pitch, 0.0));
+                self.revolver_body.group.set_orientation(core::orientation(0.0, 0.0));
+            }
+        }
+
+        // Update the render state of the hammer.
+        // --------------------------------------
+
+        let uncocked_orientation = Quaternion::from(Euler::new(
+            Rad(0.0),
+            Rad(0.0),
+            Rad(0.0),
+        ));
+
+        let cocked_orientation = Quaternion::from(Euler::new(
+            Rad(PI / 6.0),
+            Rad(0.0),
+            Rad(0.0),
+        ));
+
+        // Set the orientation of the hammer based on the hammer state.
+        match player.gun.hammer_state {
+            HammerState::Uncocked => {
+                self.hammer.group.set_orientation(uncocked_orientation);
+            }
+
+            HammerState::Cocking { remaining } => {
+                let remaining_millis = remaining.as_millis();
+                let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
+                self.hammer.group.set_orientation(
+                    uncocked_orientation.nlerp(cocked_orientation, t),
+                );
+            }
+
+            HammerState::Cocked => {
+                self.hammer.group.set_orientation(cocked_orientation);
+            }
+
+            HammerState::Firing { remaining } => {
+                let remaining_millis = remaining.as_millis();
+                let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
+                self.hammer.group.set_orientation(
+                    cocked_orientation.nlerp(uncocked_orientation, t),
+                );
+            }
+        }
+
+        // Update the render state of the cylinder.
+        // ----------------------------------------
+
+        let closed_orientation = Quaternion::from(Euler::new(
+            Rad(0.0),
+            Rad(0.0),
+            Rad(0.0),
+        ));
+
+        let open_orientation = Quaternion::from(Euler::new(
+            Rad(0.0),
+            Rad(0.0),
+            Rad(PI / 2.0),
+        ));
+
+        match player.gun.cylinder_state {
+            // If the cylinder is closed, use the current cylinder position, taking
+            // into account the hammer animation if necessary.
+            CylinderState::Closed { position } => {
+                let cylinder_orientation = Quaternion::from(Euler::new(
+                    Rad(0.0),
+                    Rad(0.0),
+                    Rad(TAU / 6.0 * position as f32),
+                ));
+                match player.gun.hammer_state {
+                    // If the hammer is cocking, we animate the rotation of the cylinder as it
+                    // rotates to the current position.
+                    HammerState::Cocking { remaining } => {
+                        let prev_orientation = Quaternion::from(Euler::new(
+                            Rad(0.0),
+                            Rad(0.0),
+                            Rad(TAU / 6.0 * (position as f32 - 1.0)),
+                        ));
+
+                        let remaining_millis = remaining.as_millis();
+                        let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
+
+                        let orientation = prev_orientation.nlerp(cylinder_orientation, t);
+                        self.cylinder.group.set_orientation(orientation);
+                    }
+
+                    // For all other hammer state, the cylinder is static at its current
+                    // position.
+                    _ => {
+                        self.cylinder.group.set_orientation(cylinder_orientation);
+                    }
+                }
+            }
+
+            CylinderState::Opening { remaining, rotation } => {
+                // Lerp the cylinder opening.
+                let remaining_millis = remaining.as_millis();
+                let t = 1.0 - (remaining_millis as f32 / CYLINDER_OPEN_MILLIS as f32);
+                self.pivot.group.set_orientation(
+                    closed_orientation.nlerp(open_orientation, t),
+                );
+
+                self.cylinder.group.set_orientation(Quaternion::from(Euler::new(
+                    Rad(0.0),
+                    Rad(0.0),
+                    Rad(TAU * rotation / 6.0),
+                )));
+            }
+
+            CylinderState::Open { rotation } => {
+                self.pivot.group.set_orientation(open_orientation);
+
+                self.cylinder.group.set_orientation(Quaternion::from(Euler::new(
+                    Rad(0.0),
+                    Rad(0.0),
+                    Rad(TAU * rotation / 6.0),
+                )));
+            }
+
+            CylinderState::Closing { remaining, rotation } => {
+                // Lerp the cylinder closing.
+                let remaining_millis = remaining.as_millis();
+                let t = 1.0 - (remaining_millis as f32 / CYLINDER_OPEN_MILLIS as f32);
+                self.pivot.group.set_orientation(
+                    open_orientation.nlerp(closed_orientation, t),
+                );
+
+                self.cylinder.group.set_orientation(Quaternion::from(Euler::new(
+                    Rad(0.0),
+                    Rad(0.0),
+                    Rad(TAU * rotation / 6.0),
+                )));
+            }
+
+            CylinderState::Ejecting { remaining, keyframe, rotation } => {
+                // Make sure cylinder rotation is correct.
+                self.cylinder.group.set_orientation(Quaternion::from(Euler::new(
+                    Rad(0.0),
+                    Rad(0.0),
+                    Rad(TAU * rotation / 6.0),
+                )));
+
+                let remaining_millis = remaining.as_millis();
+                let duration = EJECT_KEYFRAME_MILLIS[keyframe];
+                let t = 1.0 - (remaining_millis as f32 / duration as f32);
+
+                let from = eject_keyframes[keyframe];
+                let to = eject_keyframes[keyframe + 1];
+                let orientation = from.nlerp(to, t);
+
+                self.revolver_body.group.set_orientation(orientation);
+            }
+        }
+
+        // Update the render state of the cartridges in the cylinder.
+        for chamber_index in 0 .. 6 {
+            let chamber = &mut self.chambers[chamber_index];
+            match player.gun.cartridges[chamber_index] {
+                Some(..) => {
+                    // If there's not already a cartridge instance in the scene
+                    // for the current chamber, add one.
+                    if chamber.cartridge.is_none() {
+                        // TODO: Don't create a new bullet instance every time, pool
+                        // objects and reuse them.
+                        let bullet = factory.instantiate_gltf_scene(&bullet_source, 0);
+
+                        // Add the bullet instance to the scene.
+                        chamber.node.group.add(&bullet.root_group);
+
+                        chamber.cartridge = Some(bullet.root_group.clone());
+                    }
+                },
+
+                None => {
+                    if let Some(bullet_group) = chamber.cartridge.take() {
+                        // TODO: Recyle `bullet_group` instead of letting it be
+                        // destroyed.
+                        chamber.node.group.remove(&bullet_group);
+                    }
+                },
+            }
+        }
     }
 }
 
@@ -854,6 +926,53 @@ impl Default for Recoil {
             gun_offset: Vector3::new(0.0, 0.0, 0.0),
             look_velocity: Vector3::new(0.0, 0.0, 0.0),
             gun_velocity: Vector3::new(0.0, 0.0, 0.0),
+        }
+    }
+}
+
+fn step(player: &mut Player, player_render: &mut RenderState, input: &InputFrame, delta: f32) {
+    // Step the player's overall position and orientation for one frame.
+    player.step(input, delta);
+
+    // Replay any revolver actions for the frame.
+    for action in &input.revolver_actions {
+        player.handle_revolver_action(*action);
+    }
+
+    // Step the player's gun for one frame, beginning the recoil animation
+    // if the player fired their gun.
+    if player.gun.step(::std::time::Duration::from_secs(1) / 60) {
+        // If there is already a recoil animation happening, we reset the
+        // velocities but preserve the current offsets, which allows us to
+        // smoothly restart the animation without any jumps.
+        let recoil = player_render.recoil_anim.unwrap_or_default();
+        player_render.recoil_anim = Some(Recoil {
+            look_velocity: Vector3::new(10.0, 1.0, 0.0),
+            gun_velocity: Vector3::new(20.0, -3.0, 0.0),
+
+            .. recoil
+        });
+    }
+
+    // Step the recoil animation, if necessary.
+    if let Some(mut recoil) = player_render.recoil_anim {
+        // Apply angular velocity to the current offsets.
+        recoil.look_offset += recoil.look_velocity * delta;
+        recoil.gun_offset += recoil.gun_velocity * delta;
+
+        // Apply drag to the angular velocities.
+        recoil.look_velocity += (-recoil.look_offset * 400.0 - recoil.look_velocity * 30.0) * delta;
+        recoil.gun_velocity += (-recoil.gun_offset * 400.0 - recoil.gun_velocity * 30.0) * delta;
+
+        // Check if recoil has ended.
+        if relative_eq!(recoil.look_offset.magnitude2(), 0.0)
+            && relative_eq!(recoil.look_velocity.magnitude2(), 0.0)
+            && relative_eq!(recoil.gun_offset.magnitude2(), 0.0)
+            && relative_eq!(recoil.gun_velocity.magnitude2(), 0.0)
+        {
+            player_render.recoil_anim = None;
+        } else {
+            player_render.recoil_anim = Some(recoil);
         }
     }
 }
