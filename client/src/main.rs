@@ -12,29 +12,35 @@ extern crate sumi;
 extern crate three;
 extern crate tokio_core;
 
-use core::*;
-use core::math::*;
-use core::revolver::*;
-use std::collections::{HashMap, VecDeque};
-use futures::prelude::*;
-use futures::sync::mpsc;
-use futures::sync::oneshot;
-use futures::executor;
-use std::io;
-use std::thread;
+use core::{
+    *,
+    math::*,
+    revolver::*,
+};
+use futures::{
+    executor,
+    prelude::*,
+    sync::{mpsc, oneshot},
+};
+use std::{
+    collections::{HashMap, VecDeque},
+    io,
+    thread,
+};
 use sumi::Connection;
 use three::{
+    camera::Camera,
     CursorState,
     Factory,
-    Gltf,
-    GltfNodeInstance,
-    GltfSceneInstance,
     Group,
     Key,
+    Mesh,
     MouseButton,
     Object,
+    object::{Base, ObjectType},
+    scene::SyncGuard,
+    template::Template,
 };
-use three::camera::Camera;
 use tokio_core::reactor::Core;
 
 fn main() {
@@ -47,6 +53,14 @@ fn main() {
     // Open a window.
     let mut window = three::Window::new("online-fps client");
     window.scene.background = three::Background::Color(0xC6F0FF);
+
+    let directional_light = window.factory.directional_light(0xFFFFFF, 0.4);
+    directional_light.look_at([1.0, -5.0, 10.0], [0.0, 0.0, 0.0], None);
+    window.scene.add(&directional_light);
+
+    let ambient_light = window.factory.ambient_light(0xFFFFFF, 0.5);
+    window.scene.add(&ambient_light);
+
     window.set_cursor_state(CursorState::Grab);
 
     // Create the event loop that will drive network communication.
@@ -174,8 +188,8 @@ fn main() {
         )),
     ];
 
-    let static_revolver = window.factory.instantiate_gltf_scene(&bullet_source, 0);
-    window.scene.add(&static_revolver.root_group);
+    let (static_revolver, _) = window.factory.instantiate_template(&bullet_source[0]);
+    window.scene.add(&static_revolver);
 
     // HACK: We need to track which frame a button was pressed/released because three does not
     // yet do that itself.
@@ -342,8 +356,8 @@ fn main() {
                             let render_state = RenderState::new(
                                 &mut window,
                                 &player,
-                                &revolver_source,
-                                &biped_source,
+                                &revolver_source[0],
+                                &biped_source[0],
                             );
                             trace!("Created render state for player {:#x}: {:?}", id, render_state);
                             state.render_state.insert(id, render_state);
@@ -455,7 +469,7 @@ fn main() {
                             render_state.update(
                                 player,
                                 &eject_keyframes,
-                                &bullet_source,
+                                &bullet_source[0],
                                 &mut window.factory,
                             );
                         }
@@ -496,8 +510,8 @@ fn main() {
                         let player_render = RenderState::new(
                             &mut window,
                             &player,
-                            &revolver_source,
-                            &biped_source,
+                            &revolver_source[0],
+                            &biped_source[0],
                         );
                         trace!("Created render state for player {:#x}: {:?}", player_id, player_render);
                         render_state.insert(*player_id, player_render);
@@ -506,7 +520,7 @@ fn main() {
                     // Disable rendering of the local player's body.
                     {
                         let player_render = &render_state[&id];
-                        for mesh in &player_render.torso.meshes {
+                        for mesh in &player_render.body_meshes {
                             mesh.set_visible(false);
                         }
                     }
@@ -570,18 +584,17 @@ struct GameState {
 
 #[derive(Debug)]
 struct RenderState {
-    root: Group,
+    root: Base,
 
-    revolver: GltfSceneInstance,
+    head: Base,
+    body_meshes: Vec<Mesh>,
+
+    revolver: Base,
     chambers: [Chamber; 6],
-    revolver_body: GltfNodeInstance,
-    cylinder: GltfNodeInstance,
-    pivot: GltfNodeInstance,
-    hammer: GltfNodeInstance,
-
-    body: GltfSceneInstance,
-    torso: GltfNodeInstance,
-    head: GltfNodeInstance,
+    revolver_body: Base,
+    cylinder: Base,
+    pivot: Base,
+    hammer: Base,
 
     camera: Camera,
 
@@ -592,75 +605,80 @@ impl RenderState {
     fn new(
         window: &mut three::Window,
         player: &Player,
-        revolver_source: &Gltf,
-        body_source: &Gltf,
+        revolver_template: &Template,
+        body_template: &Template,
     ) -> RenderState {
         // Create a group for all of the player's parts.
-        let root = window.factory.group();
-        window.scene.add(&root);
 
-        root.set_position(player.position);
+        // // Set the initial position of the player.
+        // root.set_position(player.position);
 
         // TODO: Set the initial orientation of the player.
 
-        // Instantiate a body for the player.
-        let body = window.factory.instantiate_gltf_scene(&body_source, 0);
-        root.add(&body.root_group);
+        // Instantiate the body and revolver models for the player.
+        let (body, _) = window.factory.instantiate_template(body_template);
+        let (revolver, _) = window.factory.instantiate_template(revolver_template);
 
-        let head_index = body_source.node_index_for_name("Head").unwrap();
-        let head = body.nodes[&head_index].clone();
+        body.set_name(format!("Player {:#x}", player.id));
+        window.scene.add(&body);
 
-        let torso_index = body_source.node_index_for_name("Body").unwrap();
-        let torso = body.nodes[&torso_index].clone();
+        let mut guard = window.scene.sync_guard();
 
-        // Instantiate a revolver for the player.
-        let revolver = window.factory.instantiate_gltf_scene(&revolver_source, 0);
-        head.group.add(&revolver.root_group);
+        // Retrieve objects in the body model.
+        let body_meshes = guard.find_children_of_type::<Mesh>(&body).collect();
+        let head = guard.find_child_of_type_by_name::<Group>(&body, "Head").unwrap();
 
-        // Retreive the node for the revolver's cylinder.
-        let cylinder_index = revolver_source.node_index_for_name("Cylinder").unwrap();
-        let cylinder = revolver.nodes[&cylinder_index].clone();
+        // Make the revolver model a child of the head node.
+        head.add(&revolver);
+
+        // Rerieve objects in the revolver model.
+        let cylinder = guard.find_child_by_name(&revolver, "Cylinder").unwrap();
+        let revolver_body = guard.find_child_by_name(&revolver, "Body").unwrap();
+        let pivot = guard.find_child_by_name(&revolver, "Cylinder Pivot").unwrap();
+        let hammer = guard.find_child_by_name(&revolver, "Hammer").unwrap();
 
         // Retreive the nodes that mark each of the chambers in the cylinder.
         let chambers = [
-            Chamber::from_gltf(&revolver_source, &revolver, "Chamber 0"),
-            Chamber::from_gltf(&revolver_source, &revolver, "Chamber 1"),
-            Chamber::from_gltf(&revolver_source, &revolver, "Chamber 2"),
-            Chamber::from_gltf(&revolver_source, &revolver, "Chamber 3"),
-            Chamber::from_gltf(&revolver_source, &revolver, "Chamber 4"),
-            Chamber::from_gltf(&revolver_source, &revolver, "Chamber 5"),
+            Chamber::from_gltf(&mut guard, &revolver, "Chamber 0"),
+            Chamber::from_gltf(&mut guard, &revolver, "Chamber 1"),
+            Chamber::from_gltf(&mut guard, &revolver, "Chamber 2"),
+            Chamber::from_gltf(&mut guard, &revolver, "Chamber 3"),
+            Chamber::from_gltf(&mut guard, &revolver, "Chamber 4"),
+            Chamber::from_gltf(&mut guard, &revolver, "Chamber 5"),
         ];
 
-        // Retreive the root node for the revolver in the scene.
-        let revolver_body_index = revolver_source.node_index_for_name("Body").unwrap();
-        let revolver_body = revolver.nodes[&revolver_body_index].clone();
-
-        // Retreive the pivot for the revolver's cylinder.
-        let pivot_index = revolver_source.node_index_for_name("Cylinder Pivot").unwrap();
-        let pivot = revolver.nodes[&pivot_index].clone();
-
-        // Retreive the node for the revolver's hammer.
-        let hammer_index = revolver_source.node_index_for_name("Hammer").unwrap();
-        let hammer = revolver.nodes[&hammer_index].clone();
-
-        let camera_index = revolver_source.node_index_for_name("Correction_Camera").unwrap();
-        let camera = revolver.nodes[&camera_index].camera.clone().unwrap();
+        // Due to how three-rs structures templates loaded from glTF files, the actual `Camera`
+        // object will be a child of the glTF node that has the camera attached
+        // ("Correction_Camera", in the case of our revolver). To handle this, we must manually
+        // find the `Camera` object in the children of the node.
+        let camera_parent = guard
+            .find_child_of_type_by_name::<Group>(&revolver, "Correction_Camera")
+            .unwrap();
+        let camera = {
+            let mut temp = None;
+            for child in guard.resolve_data(&camera_parent) {
+                if let ObjectType::Camera(camera) = guard.resolve_data(&child) {
+                    temp = Some(camera);
+                    break;
+                }
+            }
+            temp.expect("No camera found as child of Correction_Camera")
+        };
 
         RenderState {
-            root,
+            root: body.upcast(),
 
-            revolver,
+            revolver: revolver.upcast(),
             revolver_body,
             cylinder,
             chambers,
             pivot,
             hammer,
 
-            body,
-            torso,
-            head,
+            body_meshes,
+            head: head.upcast(),
 
-            camera,
+            camera: camera,
 
             recoil_anim: None,
         }
@@ -670,7 +688,7 @@ impl RenderState {
         &mut self,
         player: &Player,
         eject_keyframes: &[Quaternion<f32>; 4],
-        bullet_source: &Gltf,
+        bullet_template: &Template,
         factory: &mut Factory,
     ) {
         // Update the player's position.
@@ -686,17 +704,17 @@ impl RenderState {
                 let pitch = player.pitch + recoil.look_offset.x;
                 let yaw = recoil.look_offset.y;
 
-                self.head.group.set_orientation(core::orientation(pitch, yaw));
+                self.head.set_orientation(core::orientation(pitch, yaw));
 
-                self.revolver_body.group.set_orientation(core::orientation(
+                self.revolver_body.set_orientation(core::orientation(
                     recoil.gun_offset.x,
                     recoil.gun_offset.y,
                 ));
             }
 
             None => {
-                self.head.group.set_orientation(core::orientation(player.pitch, 0.0));
-                self.revolver_body.group.set_orientation(core::orientation(0.0, 0.0));
+                self.head.set_orientation(core::orientation(player.pitch, 0.0));
+                self.revolver_body.set_orientation(core::orientation(0.0, 0.0));
             }
         }
 
@@ -718,25 +736,25 @@ impl RenderState {
         // Set the orientation of the hammer based on the hammer state.
         match player.gun.hammer_state {
             HammerState::Uncocked => {
-                self.hammer.group.set_orientation(uncocked_orientation);
+                self.hammer.set_orientation(uncocked_orientation);
             }
 
             HammerState::Cocking { remaining } => {
                 let remaining_millis = remaining.as_millis();
                 let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
-                self.hammer.group.set_orientation(
+                self.hammer.set_orientation(
                     uncocked_orientation.nlerp(cocked_orientation, t),
                 );
             }
 
             HammerState::Cocked => {
-                self.hammer.group.set_orientation(cocked_orientation);
+                self.hammer.set_orientation(cocked_orientation);
             }
 
             HammerState::Firing { remaining } => {
                 let remaining_millis = remaining.as_millis();
                 let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
-                self.hammer.group.set_orientation(
+                self.hammer.set_orientation(
                     cocked_orientation.nlerp(uncocked_orientation, t),
                 );
             }
@@ -780,13 +798,13 @@ impl RenderState {
                         let t = 1.0 - (remaining_millis as f32 / HAMMER_COCK_MILLIS as f32);
 
                         let orientation = prev_orientation.nlerp(cylinder_orientation, t);
-                        self.cylinder.group.set_orientation(orientation);
+                        self.cylinder.set_orientation(orientation);
                     }
 
                     // For all other hammer state, the cylinder is static at its current
                     // position.
                     _ => {
-                        self.cylinder.group.set_orientation(cylinder_orientation);
+                        self.cylinder.set_orientation(cylinder_orientation);
                     }
                 }
             }
@@ -795,11 +813,11 @@ impl RenderState {
                 // Lerp the cylinder opening.
                 let remaining_millis = remaining.as_millis();
                 let t = 1.0 - (remaining_millis as f32 / CYLINDER_OPEN_MILLIS as f32);
-                self.pivot.group.set_orientation(
+                self.pivot.set_orientation(
                     closed_orientation.nlerp(open_orientation, t),
                 );
 
-                self.cylinder.group.set_orientation(Quaternion::from(Euler::new(
+                self.cylinder.set_orientation(Quaternion::from(Euler::new(
                     Rad(0.0),
                     Rad(0.0),
                     Rad(TAU * rotation / 6.0),
@@ -807,9 +825,9 @@ impl RenderState {
             }
 
             CylinderState::Open { rotation } => {
-                self.pivot.group.set_orientation(open_orientation);
+                self.pivot.set_orientation(open_orientation);
 
-                self.cylinder.group.set_orientation(Quaternion::from(Euler::new(
+                self.cylinder.set_orientation(Quaternion::from(Euler::new(
                     Rad(0.0),
                     Rad(0.0),
                     Rad(TAU * rotation / 6.0),
@@ -820,11 +838,11 @@ impl RenderState {
                 // Lerp the cylinder closing.
                 let remaining_millis = remaining.as_millis();
                 let t = 1.0 - (remaining_millis as f32 / CYLINDER_OPEN_MILLIS as f32);
-                self.pivot.group.set_orientation(
+                self.pivot.set_orientation(
                     open_orientation.nlerp(closed_orientation, t),
                 );
 
-                self.cylinder.group.set_orientation(Quaternion::from(Euler::new(
+                self.cylinder.set_orientation(Quaternion::from(Euler::new(
                     Rad(0.0),
                     Rad(0.0),
                     Rad(TAU * rotation / 6.0),
@@ -833,7 +851,7 @@ impl RenderState {
 
             CylinderState::Ejecting { remaining, keyframe, rotation } => {
                 // Make sure cylinder rotation is correct.
-                self.cylinder.group.set_orientation(Quaternion::from(Euler::new(
+                self.cylinder.set_orientation(Quaternion::from(Euler::new(
                     Rad(0.0),
                     Rad(0.0),
                     Rad(TAU * rotation / 6.0),
@@ -847,7 +865,7 @@ impl RenderState {
                 let to = eject_keyframes[keyframe + 1];
                 let orientation = from.nlerp(to, t);
 
-                self.revolver_body.group.set_orientation(orientation);
+                self.revolver_body.set_orientation(orientation);
             }
         }
 
@@ -861,20 +879,20 @@ impl RenderState {
                     if chamber.cartridge.is_none() {
                         // TODO: Don't create a new bullet instance every time, pool
                         // objects and reuse them.
-                        let bullet = factory.instantiate_gltf_scene(&bullet_source, 0);
+                        let (bullet, _) = factory.instantiate_template(&bullet_template);
 
                         // Add the bullet instance to the scene.
-                        chamber.node.group.add(&bullet.root_group);
+                        chamber.node.add(&bullet);
 
-                        chamber.cartridge = Some(bullet.root_group.clone());
+                        chamber.cartridge = Some(bullet.upcast());
                     }
                 },
 
                 None => {
-                    if let Some(bullet_group) = chamber.cartridge.take() {
+                    if let Some(bullet) = chamber.cartridge.take() {
                         // TODO: Recyle `bullet_group` instead of letting it be
                         // destroyed.
-                        chamber.node.group.remove(&bullet_group);
+                        chamber.node.remove(&bullet);
                     }
                 },
             }
@@ -884,14 +902,15 @@ impl RenderState {
 
 #[derive(Debug)]
 struct Chamber {
-    node: GltfNodeInstance,
-    cartridge: Option<Group>,
+    node: Group,
+    cartridge: Option<Base>,
 }
 
 impl Chamber {
-    fn from_gltf(gltf: &Gltf, instance: &GltfSceneInstance, node_name: &str) -> Chamber {
-        let index = gltf.node_index_for_name(node_name).unwrap();
-        let node = instance.nodes[&index].clone();
+    fn from_gltf(guard: &mut SyncGuard, root: &Group, name: &str) -> Chamber {
+        let node = guard
+            .find_child_of_type_by_name::<Group>(root, name)
+            .expect("Chamber object not found");
 
         Chamber {
             node,
