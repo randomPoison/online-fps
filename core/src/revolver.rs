@@ -1,5 +1,4 @@
 use std::mem;
-use std::time::Duration;
 
 pub const HAMMER_COCK_MILLIS: u64 = 300;
 pub const HAMMER_FALL_MILLIS: u64 = 50;
@@ -26,40 +25,36 @@ impl Revolver {
     /// Step the revolver for a single frame, returning whether or not it was fired.
     ///
     /// Returns `true` if the revolver was fired and a bullet should be spawned, false otherwise.
-    pub fn step(&mut self, delta: Duration) -> bool {
+    pub fn step(&mut self, delta: f32) -> bool {
         // Update the hammer's animation, if necessary.
         let fired = match self.hammer_state {
             HammerState::Cocking { remaining } => {
-                match remaining.checked_sub(delta) {
-                    Some(remaining) => { self.hammer_state = HammerState::Cocking { remaining }; }
-
-                    None => {
-                        self.hammer_state = HammerState::Cocked;
-                    }
+                let remaining = remaining - delta;
+                if remaining > 0.0 {
+                    self.hammer_state = HammerState::Cocking { remaining };
+                } else {
+                    self.hammer_state = HammerState::Cocked;
                 }
 
                 false
             }
 
             HammerState::Firing { remaining } => {
-                match remaining.checked_sub(delta) {
-                    Some(remaining) => {
-                        self.hammer_state = HammerState::Firing { remaining };
-                        false
-                    }
+                let remaining = remaining - delta;
+                if remaining > 0.0 {
+                    self.hammer_state = HammerState::Firing { remaining };
+                    false
+                } else {
+                    self.hammer_state = HammerState::Uncocked;
 
-                    None => {
-                        self.hammer_state = HammerState::Uncocked;
-
-                        // Check the cartridge in the current chamber, and fire it if it is fresh.
-                        match self.current_cartridge() {
-                            Some(Cartridge::Fresh) => {
-                                self.set_current_cartridge(Some(Cartridge::Spent));
-                                true
-                            }
-
-                            _ => false,
+                    // Check the cartridge in the current chamber, and fire it if it is fresh.
+                    match self.current_cartridge() {
+                        Some(Cartridge::Fresh) => {
+                            self.set_current_cartridge(Some(Cartridge::Spent));
+                            true
                         }
+
+                        _ => false,
                     }
                 }
             }
@@ -70,58 +65,49 @@ impl Revolver {
         // Update the cylinder's animation, if necessary.
         match self.cylinder_state {
             CylinderState::Opening { remaining, rotation } => {
-                match remaining.checked_sub(delta) {
-                    Some(remaining) => {
-                        self.cylinder_state = CylinderState::Opening { remaining, rotation };
-                    }
-
-                    None => {
-                        self.cylinder_state = CylinderState::Open { rotation };
-                    }
+                let remaining = remaining - delta;
+                if remaining > 0.0 {
+                    self.cylinder_state = CylinderState::Opening { remaining, rotation };
+                } else {
+                    self.cylinder_state = CylinderState::Open { rotation };
                 }
             }
 
             CylinderState::Closing { remaining, rotation } => {
-                match remaining.checked_sub(delta) {
-                    Some(remaining) => {
-                        self.cylinder_state = CylinderState::Closing { remaining, rotation };
-                    }
-
-                    None => {
-                        let position = rotation.round() as usize % 6;
-                        self.cylinder_state = CylinderState::Closed { position };
-                    }
+                let remaining = remaining - delta;
+                if remaining > 0.0 {
+                    self.cylinder_state = CylinderState::Closing { remaining, rotation };
+                } else {
+                    let position = rotation.round() as usize % 6;
+                    self.cylinder_state = CylinderState::Closed { position };
                 }
             }
 
             CylinderState::Ejecting { rotation, keyframe, remaining } => {
-                match remaining.checked_sub(delta) {
-                    Some(remaining) => {
-                        self.cylinder_state = CylinderState::Ejecting { rotation, keyframe, remaining };
-                    }
+                let remaining = remaining - delta;
+                if remaining > 0.0 {
+                    self.cylinder_state = CylinderState::Ejecting { rotation, keyframe, remaining };
+                } else {
+                    let keyframe = keyframe + 1;
+                    if keyframe < EJECT_KEYFRAME_MILLIS.len() {
 
-                    None => {
-                        let keyframe = keyframe + 1;
-                        if keyframe < EJECT_KEYFRAME_MILLIS.len() {
-
-                            // After the pause in the middle of the animation, officially remove
-                            // all cartridges from the cylinder.
-                            if keyframe == 2 {
-                                self.cartridges = [None; 6];
-                            }
-
-                            // Continue to the next keyframe of the eject animation.
-                            self.cylinder_state = CylinderState::Ejecting {
-                                rotation,
-                                keyframe,
-
-                                // TODO: Apply overflow to the progress of the next keyframe.
-                                remaining: Duration::from_millis(EJECT_KEYFRAME_MILLIS[keyframe]),
-                            }
-                        } else {
-                            // The eject animation is done, so return to the open state.
-                            self.cylinder_state = CylinderState::Open { rotation };
+                        // After the pause in the middle of the animation, officially remove
+                        // all cartridges from the cylinder.
+                        if keyframe == 2 {
+                            self.cartridges = [None; 6];
                         }
+
+                        // Continue to the next keyframe of the eject animation.
+                        self.cylinder_state = CylinderState::Ejecting {
+                            rotation,
+                            keyframe,
+
+                            // TODO: Apply overflow to the progress of the next keyframe.
+                            remaining: EJECT_KEYFRAME_MILLIS[keyframe] as f32 / 1000.0,
+                        }
+                    } else {
+                        // The eject animation is done, so return to the open state.
+                        self.cylinder_state = CylinderState::Open { rotation };
                     }
                 }
             }
@@ -198,18 +184,18 @@ impl Revolver {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum HammerState {
     Uncocked,
 
     Cocking {
-        remaining: Duration,
+        remaining: f32,
     },
 
     Cocked,
 
     Firing {
-        remaining: Duration,
+        remaining: f32,
     },
 }
 
@@ -240,7 +226,7 @@ pub enum CylinderState {
     },
 
     Opening {
-        remaining: Duration,
+        remaining: f32,
         rotation: f32,
     },
 
@@ -251,11 +237,11 @@ pub enum CylinderState {
     Ejecting {
         rotation: f32,
         keyframe: usize,
-        remaining: Duration,
+        remaining: f32,
     },
 
     Closing {
-        remaining: Duration,
+        remaining: f32,
         rotation: f32,
     },
 }

@@ -1,4 +1,6 @@
+extern crate amethyst;
 extern crate core;
+extern crate crossbeam_channel;
 extern crate futures;
 extern crate futures_cpupool;
 #[macro_use]
@@ -8,24 +10,160 @@ extern crate rand;
 extern crate sumi;
 extern crate tokio_core;
 
-use core::*;
-use core::revolver::*;
-use core::math::*;
-use futures::{Async, Future, Sink, Stream};
-use futures::executor;
-use futures::sync::mpsc;
+use amethyst::{
+    core::frame_limiter::FrameRateLimitStrategy,
+    core::timing::Time,
+    ecs::prelude::*,
+    prelude::*,
+};
+use core::{
+    *,
+    math::*,
+    player::Player,
+    revolver::*,
+};
+use crossbeam_channel::{Receiver};
+use futures::Stream;
 use rand::Rng;
-use std::io;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::{
+    thread,
+    time::Duration,
+};
 use sumi::ConnectionListener;
 use tokio_core::reactor::Core;
 
-fn main() {
+type Broadcasts = Vec<ServerMessageBody>;
+
+struct Server {
+    new_connections: Receiver<Connection<ServerMessage, ClientMessage>>,
+    frame_count: usize,
+}
+
+impl<'a, 'b> State<GameData<'a, 'b>, ()> for Server {
+    fn update(&mut self, data: StateData<GameData>) -> SimpleTrans<'a, 'b> {
+        self.frame_count += 1;
+
+        // Handle any new connections, adding a new player for the new client.
+        assert!(!self.new_connections.is_disconnected(), "New connections channel disconnected");
+        for connection in self.new_connections.try_iter() {
+            let id = rand::random();
+            info!("New player joined and was assigned ID {:#x}", id);
+
+            let player = Player {
+                id,
+                position: Point3::new(0.0, 0.0, 0.0),
+                yaw: 0.0,
+                pitch: 0.0,
+                gun: Revolver::default(),
+            };
+
+            let mut client = Client {
+                connection,
+
+                id,
+                input: InputFrame::default(),
+
+                latest_frame: 0,
+
+                player: player.clone(),
+            };
+
+            // Build the current state of the world to send to the new client.
+            let client_world = {
+                let mut players = ::std::collections::HashMap::new();
+
+                // Add all existing players to the world state.
+                let mut clients = data.world.write_storage::<Client>();
+                for client in (&clients).join() {
+                    players.insert(client.id, client.player.clone());
+                }
+
+                // Add the new player to the world state.
+                players.insert(id, player.clone());
+
+                ::core::World { players }
+            };
+
+            // Notify all other connected clients that a new player joined.
+            // TODO: We need to somehow not send this message to the new client.
+            {
+                let mut clients = data.world.write_storage::<Client>();
+                for client in (&mut clients).join() {
+                    // TODO: This should be a send-reliable.
+                    client.connection.send(ServerMessage {
+                        server_frame: self.frame_count,
+                        client_frame: client.latest_frame,
+                        body: ServerMessageBody::PlayerJoined {
+                            id,
+                            player: player.clone(),
+                        },
+                    });
+                }
+            }
+
+            // Send the current world state to the new client.
+            // TODO: This should be a send-reliable.
+            client.connection.send(ServerMessage {
+                server_frame: self.frame_count,
+                client_frame: 0,
+                body: ServerMessageBody::Init { id, world: client_world },
+            });
+
+            // Add the client to the list of connected clients.
+            data
+                .world
+                .create_entity()
+                .with(client)
+                .build();
+        }
+
+        // Allow all systems to run.
+        data.data.update(&data.world);
+
+        data.world.maintain();
+
+        let mut broadcasts = data.world.write_resource::<Broadcasts>();
+        let mut clients = data.world.write_storage::<Client>();
+
+        // Build the current state of the world to send to the new client.
+        let client_world = {
+            let mut players = ::std::collections::HashMap::new();
+
+            // Add all existing players to the world state.
+            for client in (&mut clients).join() {
+                players.insert(client.id, client.player.clone());
+            }
+
+            ::core::World { players }
+        };
+
+        // Enqueue the broadcast the be sent to all remaining clients.
+        broadcasts.push(ServerMessageBody::WorldUpdate(client_world));
+
+        // Send the current world state to each of the connected clients.
+        for client in (&mut clients).join() {
+            for broadcast in &*broadcasts {
+                trace!("Broadcasting {:?} to client {:#x}", broadcast, client.id);
+                client.connection.send(ServerMessage {
+                    server_frame: self.frame_count,
+                    client_frame: client.latest_frame,
+                    body: broadcast.clone(),
+                });
+            }
+        }
+
+        // Reset the list of broadcasts.
+        broadcasts.clear();
+
+        Trans::None
+    }
+}
+
+fn main() -> ::amethyst::Result<()> {
     // Initialize logging first so that we can start capturing logs immediately.
     log4rs::init_file("../log4rs.toml", Default::default()).expect("Failed to init log4rs");
 
-    let (mut sender, new_connections) = mpsc::channel(8);
+    let (connection_sender, new_connections) = crossbeam_channel::bounded(8);
     thread::spawn(move || {
         // Create the event loop that will drive network communication.
         let mut core = Core::new().unwrap();
@@ -35,236 +173,40 @@ fn main() {
         // connection as it is received.
         let connection_listener = ConnectionListener::bind("127.0.0.1:1234", &core.handle())
             .expect("Failed to bind socket")
-            .map(move |connection| {
-                let serialized = connection.serialized::<ServerMessage, ClientMessage>();
-                let (sink, stream) = serialized.split();
-
-                // Spawn the incoming message stream onto the reactor, creating a channel that
-                // can be used to poll for incoming messages from other threads/reactors.
-                let stream = mpsc::spawn(stream, &handle, 8);
-
-                // Spawn the outgoing message sink onto the reactor, creating a channel that can
-                // be used to send outgoing messages from other threads/reactors.
-                let sink = {
-                    let (sender, receiver) = mpsc::channel(8);
-                    let sink = sink
-                        .sink_map_err(|error| {
-                            panic!("Sink error: {:?}", error);
-                        })
-                        .send_all(receiver)
-                        .map(|_| {});
-                    handle.spawn(sink);
-
-                    sender
-                };
-
-                (sink, stream)
-            })
+            .map(move |connection| Connection::new(connection, &handle))
             .for_each(move |connection| {
-                sender.start_send(connection).expect("Failed to send the connection");
+                connection_sender
+                    .try_send(connection)
+                    .expect("Failed to send new connection to main thread");
                 Ok(())
             });
 
         core.run(connection_listener).expect("Error waiting for connections");
     });
-    let mut new_connections = executor::spawn(new_connections);
 
-    let notify = DummyNotify::new();
+    let game_data = GameDataBuilder::default()
+        .with(PlayerSystem, "player_system", &[]);
 
-    // Create the list of clients and the world state.
-    let mut clients = Vec::<Client>::new();
-    let mut world = World::new();
+    let server = Server {
+        new_connections,
+        frame_count: 0,
+    };
 
-    // Run the main loop of the game.
-    let start_time = Instant::now();
-    let target_frame_time = Duration::from_secs(1) / 60;
-    let delta = 1.0 / 60.0;
-    let mut frame_count = 0;
-    let mut frame_start = start_time;
-    loop {
-        frame_count += 1;
+    Application::build("./", server)?
+        .with_frame_limit(
+            FrameRateLimitStrategy::SleepAndYield(Duration::from_millis(2)),
+            60,
+        )
+        .build(game_data)?
+        .run();
 
-        // Handle any new connections, adding a new player for the new client.
-        loop {
-            let async = new_connections.poll_stream_notify(&notify, 0)
-                .expect("Connection listener broke");
-
-            match async {
-                Async::Ready(Some((mut sink, stream))) => {
-                    let id = rand::random();
-                    info!("New player joined and was assigned ID {:#x}", id);
-
-                    let player = Player {
-                        id,
-                        position: Point3::new(0.0, 0.0, 0.0),
-                        yaw: 0.0,
-                        pitch: 0.0,
-                        gun: Revolver::default(),
-                    };
-
-                    // Add the player to the world.
-                    world.players.insert(id, player.clone());
-
-                    // Send the current world state to the new client.
-                    // TODO: This should be a send-reliable.
-                    sink.start_send(ServerMessage {
-                        server_frame: frame_count,
-                        client_frame: 0,
-                        body: ServerMessageBody::Init { id, world: world.clone() },
-                    }).expect("Failed to send initial state");
-
-                    // Notify all other connected clients that a new player joined.
-                    for client in &mut clients {
-                        // TODO: This should be a send-reliable.
-                        client.sink.start_send(ServerMessage {
-                            server_frame: frame_count,
-                            client_frame: client.latest_frame,
-                            body: ServerMessageBody::PlayerJoined {
-                                id,
-                                player: player.clone(),
-                            },
-                        }).expect("Failed to send player joined message");
-                    }
-
-                    // Add the client to the list of connected clients.
-                    clients.push(Client {
-                        stream,
-                        sink,
-                        connected: true,
-
-                        id,
-                        input: InputFrame::default(),
-
-                        latest_frame: 0,
-                    });
-                }
-
-                Async::Ready(None) => { panic!("Connection listener stopped yielding items"); }
-
-                Async::NotReady => { break; }
-            }
-        }
-
-        // For each connected client, process any incoming messages from the client, step the
-        // player based on the current input state, and then send the player's current state back
-        // to the client.
-        let mut disconnected = Vec::new();
-        let broadcasts = Vec::<ServerMessageBody>::new();
-        for client in &mut clients {
-            // Poll the client's stream of incoming messages and handle each one we receive.
-            loop {
-                let async = executor::spawn(&mut client.stream)
-                    .poll_stream_notify(&notify, 0);
-                match async {
-                    Ok(Async::Ready(Some(message))) => {
-                        trace!("Got message for client {:#x}: {:?}", client.id, message);
-
-                        // If we receive the message out of order, straight up ignore it.
-                        // TODO: Handle out of order messages within the protocol.
-                        if message.frame < client.latest_frame { continue; }
-
-                        // Update our local info on the latest client frame we've received.
-                        client.latest_frame = message.frame;
-
-                        // Handle the actual contents of the message.
-                        let player = world.players.get_mut(&client.id)
-                            .expect("No player for client ID");
-                        match message.body {
-                            ClientMessageBody::Input(input) => { client.input = input; }
-                            ClientMessageBody::RevolverAction(action) => {
-                                player.handle_revolver_action(action);
-                            }
-                        }
-                    }
-
-                    // If there's an error or the stream is done yielding messages, then we have
-                    // disconnected from the client. We mark the client as disconnected, and add
-                    // it to the list of disconnected clients.
-                    Ok(Async::Ready(None)) | Err(..) => {
-                        info!("Disconnected from client {:#x}", client.id);
-
-                        client.connected = false;
-                        disconnected.push(client.id);
-                        break;
-                    }
-
-                    Ok(Async::NotReady) => { break; }
-                }
-            }
-
-            // Tick the player.
-            let player = world.players.get_mut(&client.id).expect("No player for id");
-            player.step(&client.input, delta);
-
-            // Tick the player's revolver, spawning a bullet and animating the recoil if it fired.
-            if player.gun.step(target_frame_time) {
-                // TODO: Spawn a bullet at the current trajectory of the gun.
-
-                // Apply recoil to the player's current aim.
-                let pitch_delta = rand::weak_rng().gen_range::<f32>(0.0, PI / 2.0 * 0.05);
-                let yaw_delta = rand::weak_rng().gen_range::<f32>(-PI * 0.001, PI * 0.001);
-                player.pitch = (player.pitch + pitch_delta).clamp(-PI, PI);
-                player.yaw = (player.yaw + yaw_delta) % TAU;
-            }
-        }
-
-        // Remove any clients that have disconnected.
-        clients.retain(|client| client.connected);
-
-        // Remove disconnected players from the game world, and notify connected clients of each
-        // player that leaves.
-        for id in disconnected {
-            world.players.remove(&id).expect("Tried to remove player but player didn't exist");
-
-            for client in &mut clients {
-                // TODO: This should be a send-reliable.
-                client.sink.start_send(ServerMessage {
-                    server_frame: frame_count,
-                    client_frame: client.latest_frame,
-                    body: ServerMessageBody::PlayerLeft { id },
-                }).expect("Failed to send player joined message");
-            }
-        }
-
-        // Send the current world state to each of the connected clients.
-        for client in &mut clients {
-            for broadcast in &broadcasts {
-                client.sink.start_send(ServerMessage {
-                    server_frame: frame_count,
-                    client_frame: client.latest_frame,
-                    body: broadcast.clone(),
-                }).expect("Failed to start send");
-            }
-
-            client.sink.start_send(ServerMessage {
-                server_frame: frame_count,
-                client_frame: client.latest_frame,
-                body: ServerMessageBody::WorldUpdate(world.clone()),
-            }).expect("Failed to start send");
-
-            // TODO: How do we poll if the send completed?
-            executor::spawn(&mut client.sink).poll_flush_notify(&notify, 0).expect("Error polling sink");
-        }
-
-        // Determine the next frame's start time, dropping frames if we missed the frame time.
-        while frame_start < Instant::now() {
-            frame_start += target_frame_time;
-        }
-
-        // Now wait until we've returned to the frame cadence before beginning the next frame.
-        while Instant::now() < frame_start {
-            // TODO: Can we sleep the thread more efficiently?
-            thread::sleep(Duration::from_millis(1));
-        }
-    }
+    Ok(())
 }
 
 /// Represents a connected client and its associated state.
 #[derive(Debug)]
 struct Client {
-    stream: mpsc::SpawnHandle<ClientMessage, io::Error>,
-    sink: mpsc::Sender<ServerMessage>,
-    connected: bool,
+    connection: Connection<ServerMessage, ClientMessage>,
 
     id: u64,
     input: InputFrame,
@@ -274,4 +216,81 @@ struct Client {
     /// This isn't used directly by the server. It is sent back to the client so that the client
     /// can determine how much input history needs to be replayed locally.
     latest_frame: usize,
+
+    player: Player,
+}
+
+impl Component for Client {
+    type Storage = VecStorage<Self>;
+}
+
+struct PlayerSystem;
+
+impl<'a> System<'a> for PlayerSystem {
+    type SystemData = (
+        WriteStorage<'a, Client>,
+        Entities<'a>,
+        Write<'a, Broadcasts>,
+        Read<'a, Time>,
+    );
+
+    fn run(&mut self, data: Self::SystemData) {
+        let (mut clients, entities, mut broadcasts, time) = data;
+
+        let delta = time.delta_seconds();
+
+        // For each connected client, process any incoming messages from the client, step the
+        // player based on the current input state, and then send the player's current state back
+        // to the client.
+        for (entity, client) in (&*entities, &mut clients).join() {
+            if !client.connection.is_connected() {
+                info!("Disconnected from client {:#x}", client.id);
+
+                // Destroy the entity for the client.
+                entities.delete(entity).expect("Failed to delete client entity");
+
+                // Enqueue a broadcast notifying the remaining players that the player left.
+                broadcasts.push(ServerMessageBody::PlayerLeft { id: client.id });
+
+                // Skip the remaining update logic for the current client.
+                continue;
+            }
+
+            // Poll the client's stream of incoming messages and handle each one we receive.
+            for message in client.connection.try_iter() {
+                trace!("Got message for client {:#x}: {:?}", client.id, message);
+
+                // If we receive the message out of order, straight up ignore it.
+                // TODO: Handle out of order messages within the protocol.
+                if message.frame < client.latest_frame { continue; }
+
+                // Update our local info on the latest client frame we've received.
+                client.latest_frame = message.frame;
+
+                // Handle the actual contents of the message.
+                let player = &mut client.player;
+                match message.body {
+                    ClientMessageBody::Input(input) => { client.input = input; }
+                    ClientMessageBody::RevolverAction(action) => {
+                        player.handle_revolver_action(action);
+                    }
+                }
+            }
+
+            // Tick the player.
+            let player = &mut client.player;
+            player.step(&client.input, delta);
+
+            // Tick the player's revolver, spawning a bullet and animating the recoil if it fired.
+            if player.gun.step(delta) {
+                // TODO: Spawn a bullet at the current trajectory of the gun.
+
+                // Apply recoil to the player's current aim.
+                let pitch_delta = rand::weak_rng().gen_range::<f32>(0.0, PI / 2.0 * 0.05);
+                let yaw_delta = rand::weak_rng().gen_range::<f32>(-PI * 0.001, PI * 0.001);
+                player.pitch = (player.pitch + pitch_delta).clamp(-PI, PI);
+                player.yaw = (player.yaw + yaw_delta) % TAU;
+            }
+        }
+    }
 }

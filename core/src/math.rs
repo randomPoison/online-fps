@@ -1,4 +1,19 @@
-pub use cgmath::*;
+pub use cgmath::{
+    Basis2,
+    Basis3,
+    Deg,
+    Euler,
+    Point1,
+    Point2,
+    Point3,
+    Quaternion,
+    Rad,
+    Rotation,
+    Vector1,
+    Vector2,
+    Vector3,
+    Vector4,
+};
 pub use std::f32::consts::PI;
 
 pub const TAU: f32 = ::std::f32::consts::PI * 2.0;

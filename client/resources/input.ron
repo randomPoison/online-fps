@@ -1,0 +1,19 @@
+(
+    axes: {
+        "forward_backward": Emulated(
+            pos: Key(W),
+            neg: Key(S),
+        ),
+        "left_right": Emulated(
+            pos: Key(D),
+            neg: Key(A),
+        ),
+    },
+    actions: {
+        "toggle-cylinder": [Key(LShift)],
+        "eject-cartridges": [Key(Tab)],
+        "load-cartridge": [Key(R)],
+        "pull-trigger": [Mouse(Left)],
+        "pull-hammer": [Mouse(Right)],
+    },
+)

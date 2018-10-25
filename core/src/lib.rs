@@ -1,21 +1,113 @@
+#![warn(bare_trait_objects)]
+
+extern crate amethyst;
 extern crate cgmath;
+extern crate crossbeam_channel;
 extern crate futures;
+#[macro_use]
+extern crate log;
 extern crate rand;
 #[macro_use]
 extern crate serde;
+extern crate sumi;
+extern crate tokio_core;
 
-use futures::{Async, Stream};
-use futures::executor::{Notify, Spawn};
-use std::collections::HashMap;
-use std::str;
-use std::sync::Arc;
-use std::time::Duration;
+use amethyst::ecs::prelude::*;
+use futures::{
+    {Async, Future, Sink, Stream},
+    executor::{Notify, Spawn},
+};
+use serde::{Serialize, de::DeserializeOwned};
+use std::{
+    collections::HashMap,
+    fmt::Debug,
+    str,
+    sync::Arc,
+    time::Duration,
+};
+use tokio_core::reactor;
 
 use math::*;
+use player::Player;
 use revolver::*;
 
 pub mod math;
+pub mod player;
 pub mod revolver;
+
+#[derive(Debug)]
+pub struct Connection<Out, In> {
+    sender: ::futures::sync::mpsc::Sender<Out>,
+    receiver: ::crossbeam_channel::Receiver<In>,
+}
+
+impl<Out, In> Connection<Out, In>
+where
+    Out: Serialize + Debug + 'static,
+    In: DeserializeOwned + Debug + 'static
+{
+    pub fn new(connection: ::sumi::Connection, handle: &reactor::Handle) -> Connection<Out, In> {
+        let serialized = connection.serialized::<Out, In>();
+        let (outgoing, incoming) = serialized.split();
+
+        let receiver = {
+            let (sender, receiver) = crossbeam_channel::bounded(8);
+
+            // Create a future that pumps each of the incoming messages and sends them
+            // to the main thread via a channel, then spawn that future onto the reactor.
+            let incoming = incoming
+                .for_each(move |incoming| {
+                    trace!("Incoming message: {:?}", incoming);
+
+                    match sender.try_send(incoming) {
+                        Ok(()) => {},
+                        Err(_) => warn!("Failed to send message to main thread, incoming buffer is full"),
+                    }
+
+                    Ok(())
+                })
+                .map_err(|err| panic!("Unexpected error in incoming message stream: {:?}", err));
+            handle.spawn(incoming);
+
+            receiver
+        };
+
+        // Spawn the outgoing message sink onto the reactor, creating a channel that can
+        // be used to send outgoing messages from other threads/reactors.
+        let sender = {
+            let (sender, receiver) = ::futures::sync::mpsc::channel(8);
+            let sink = outgoing
+                .sink_map_err(|error| {
+                    panic!("Sink error: {:?}", error);
+                })
+                .send_all(receiver)
+                .map(|_| {});
+            handle.spawn(sink);
+
+            sender
+        };
+
+        Connection { sender, receiver }
+    }
+
+    pub fn send(&mut self, message: Out) {
+        trace!("Sending message: {:?}", message);
+        self.sender.try_send(message).expect("Failed to send outgoing message");
+    }
+
+    pub fn try_iter<'a>(&'a self) -> impl Iterator<Item = In> + 'a {
+        self
+            .receiver
+            .try_iter()
+    }
+
+    pub fn is_connected(&self) -> bool {
+        !self.receiver.is_disconnected()
+    }
+}
+
+pub type ClientConnection = Connection<ClientMessage, ServerMessage>;
+pub type ServerConnection = Connection<ServerMessage, ClientMessage>;
 
 /// Extra functionality for [`std::time::Duration`].
 ///
@@ -45,121 +137,6 @@ impl World {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Player {
-    pub id: u64,
-
-    /// The player's current root position in 3D space.
-    pub position: Point3<f32>,
-
-    /// The player's current yaw.
-    ///
-    /// Yaw has a range of [0, tau), where 0 indicates that the player is facing forward along the
-    /// negative Z axis. Yaw increases towards tau as the player turns counter-clockwise.
-    pub yaw: f32,
-
-    /// Pitch has a range of [-pi, pi], where 0 indicates that the player is looking horizontally
-    /// towards the horizon, -pi indicates that the player is looking down along the negative Y
-    /// axis, and pi indicates that the player is looking up along the positive Y axis.
-    pub pitch: f32,
-
-    /// The current state of the player's gun.
-    pub gun: Revolver,
-}
-
-impl Player {
-    /// Performs a single frame step for the player based on it inputs.
-    ///
-    /// `delta` is in seconds.
-    pub fn step(&mut self, input: &InputFrame, delta: f32) {
-        // Apply input to orientation.
-        self.yaw = (self.yaw + input.yaw_delta) % TAU;
-
-        self.pitch = (self.pitch - input.pitch_delta).clamp(-PI / 2.0, PI / 2.0);
-
-        // Determine the forward and right vectors based on the current yaw.
-        let orientation = Basis3::from(self.yaw_orientation());
-        let forward = orientation.rotate_vector(Vector3::new(0.0, 0.0, -1.0));
-        let right = orientation.rotate_vector(Vector3::new(1.0, 0.0, 0.0));
-
-        // Convert the 2D input into a 3D movement vector.
-        let velocity = forward * input.movement_dir.y + right * input.movement_dir.x;
-
-        self.position += velocity * delta;
-    }
-
-    pub fn handle_revolver_action(&mut self, action: RevolverAction) {
-        match action {
-            RevolverAction::PullTrigger => if self.gun.is_hammer_cocked() {
-                self.gun.hammer_state = HammerState::Firing {
-                    remaining: Duration::from_millis(HAMMER_FALL_MILLIS),
-                };
-            }
-
-            RevolverAction::PullHammer => if self.gun.is_hammer_uncocked() && self.gun.is_cylinder_closed() {
-                // Rotate the cylinder to the next position when we pull the
-                // hammer.
-                self.gun.rotate_cylinder();
-
-                // Start cocking the hammer.
-                self.gun.hammer_state = HammerState::Cocking {
-                    remaining: Duration::from_millis(HAMMER_COCK_MILLIS),
-                };
-            }
-
-            // Only allow the player to open the cylinder if the hammer isn't cocked; Safety first!
-            RevolverAction::ToggleCylinder => if self.gun.is_hammer_uncocked() {
-                match self.gun.cylinder_state {
-                    CylinderState::Closed { position } => {
-                        self.gun.cylinder_state = CylinderState::Opening {
-                            remaining: Duration::from_millis(CYLINDER_OPEN_MILLIS),
-                            rotation: position as f32,
-                        };
-                    }
-
-                    CylinderState::Open { rotation } => {
-                        self.gun.cylinder_state = CylinderState::Closing {
-                            remaining: Duration::from_millis(CYLINDER_OPEN_MILLIS),
-                            rotation,
-                        };
-                    }
-
-                    _ => {}
-                }
-            }
-
-            RevolverAction::LoadCartridge => if self.gun.is_cylinder_open() {
-                // Iterate over the chambers and put a fresh cartridge in the first empty one.
-                for chamber in &mut self.gun.cartridges {
-                    if chamber.is_none() {
-                        *chamber = Some(Cartridge::Fresh);
-                        return;
-                    }
-                }
-            }
-
-            RevolverAction::EjectCartridges => if self.gun.is_cylinder_open() {
-                let rotation = self.gun.cylinder_state.rotation();
-
-                // Begin the eject animation.
-                self.gun.cylinder_state = CylinderState::Ejecting {
-                    rotation,
-                    keyframe: 0,
-                    remaining: Duration::from_millis(EJECT_KEYFRAME_MILLIS[0]),
-                };
-            }
-        }
-    }
-
-    pub fn orientation(&self) -> Quaternion<f32> {
-        orientation(self.pitch, self.yaw)
-    }
-
-    pub fn yaw_orientation(&self) -> Euler<Rad<f32>> {
-        Euler::new(Rad(0.0), Rad(self.yaw), Rad(0.0))
-    }
-}
-
 /// Represents the input received on a single frame of the game.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputFrame {
@@ -172,10 +149,10 @@ pub struct InputFrame {
 
     /// The change in pitch for the current frame, in radians.
     pub pitch_delta: f32,
+}
 
-    /// Any inputs corresponding to revolver actions.
-    // TODO: Can we maybe do this without allocating every frame?
-    pub revolver_actions: Vec<RevolverAction>,
+impl Component for InputFrame {
+    type Storage = VecStorage<Self>;
 }
 
 impl Default for InputFrame {
@@ -184,7 +161,6 @@ impl Default for InputFrame {
             movement_dir: Vector2::new(0.0, 0.0),
             yaw_delta: 0.0,
             pitch_delta: 0.0,
-            revolver_actions: Vec::new(),
         }
     }
 }
@@ -218,6 +194,7 @@ impl<'a, S: 'a> Iterator for PollReady<'a, S> where S: Stream {
 }
 
 /// Helper with empty implementation of the `Notify` trait.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DummyNotify;
 
 impl DummyNotify {
@@ -295,10 +272,4 @@ pub struct ClientMessage {
 pub enum ClientMessageBody {
     Input(InputFrame),
     RevolverAction(RevolverAction),
-}
-
-pub fn orientation(pitch: f32, yaw: f32) -> Quaternion<f32> {
-    let yaw_rot = Quaternion::from(Euler::new(Rad(0.0), Rad(yaw), Rad(0.0)));
-    let pitch_rot = Quaternion::from(Euler::new(Rad(pitch), Rad(0.0), Rad(0.0)));
-    yaw_rot * pitch_rot
 }
