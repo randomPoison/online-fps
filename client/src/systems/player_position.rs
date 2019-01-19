@@ -1,10 +1,5 @@
-use amethyst::{
-    core::Transform,
-    ecs::prelude::*,
-};
-use core::{
-    player::Player,
-};
+use amethyst::{core::Transform, ecs::prelude::*};
+use core::player::Player;
 
 #[derive(Debug, Default)]
 pub struct PlayerPositionSystem;
@@ -20,8 +15,7 @@ impl<'a> System<'a> for PlayerPositionSystem {
 
     fn run(&mut self, mut data: Self::SystemData) {
         for (player, transform) in (&data.player, &mut data.transform).join() {
-            // TODO: How about a better conversion between `Point3` and `Vector3`?
-            transform.translation = [player.position.x, player.position.y, player.position.z].into();
+            transform.set_position(player.position.coords);
         }
     }
 }

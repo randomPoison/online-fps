@@ -10,10 +10,10 @@
         ),
     },
     actions: {
-        "toggle-cylinder": [Key(LShift)],
-        "eject-cartridges": [Key(Tab)],
-        "load-cartridge": [Key(R)],
-        "pull-trigger": [Mouse(Left)],
-        "pull-hammer": [Mouse(Right)],
+        "toggle-cylinder": [[Key(LShift)]],
+        "eject-cartridges": [[Key(Tab)]],
+        "load-cartridge": [[Key(R)]],
+        "pull-trigger": [[Mouse(Left)]],
+        "pull-hammer": [[Mouse(Right)]],
     },
 )

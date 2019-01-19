@@ -1,11 +1,5 @@
-use ::components::*;
-use amethyst::{
-    core::Transform,
-    ecs::prelude::*,
-};
-use core::{
-    math::*,
-};
+use amethyst::{core::Transform, ecs::prelude::*};
+use components::*;
 
 #[derive(Debug, Default)]
 pub struct PlayerPitchSystem;
@@ -21,7 +15,7 @@ impl<'a> System<'a> for PlayerPitchSystem {
 
     fn run(&mut self, mut data: Self::SystemData) {
         for (&PlayerPitch { pitch }, transform) in (&data.pitch, &mut data.transform).join() {
-            transform.rotation = Euler::new(Rad(pitch), Rad(0.0), Rad(0.0)).into();
+            transform.set_rotation_euler(pitch, 0.0, 0.0);
         }
     }
 }

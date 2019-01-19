@@ -1,11 +1,5 @@
-use amethyst::{
-    core::Transform,
-    ecs::prelude::*,
-};
-use core::{
-    math::*,
-    player::Player,
-};
+use amethyst::{core::Transform, ecs::prelude::*};
+use core::player::Player;
 
 #[derive(Debug, Default)]
 pub struct PlayerYawSystem;
@@ -21,7 +15,7 @@ impl<'a> System<'a> for PlayerYawSystem {
 
     fn run(&mut self, mut data: Self::SystemData) {
         for (player, transform) in (&data.player, &mut data.transform).join() {
-            transform.rotation = Euler::new(Rad(0.0), Rad(player.yaw), Rad(0.0)).into();
+            transform.set_rotation_euler(0.0, player.yaw, 0.0);
         }
     }
 }

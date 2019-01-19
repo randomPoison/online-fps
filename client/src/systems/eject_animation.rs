@@ -1,6 +1,6 @@
-use ::components::*;
 use amethyst::core::*;
 use amethyst::ecs::*;
+use components::*;
 use core::math::*;
 use core::player::*;
 use core::revolver::*;
@@ -21,7 +21,9 @@ impl<'a> System<'a> for EjectAnimationSystem {
 
     fn run(&mut self, mut data: Self::SystemData) {
         for (player, player_entities) in (&data.players, &data.player_entities).join() {
-            let revolver = data.revolver_entities.get(player_entities.gun.into())
+            let revolver = data
+                .revolver_entities
+                .get(player_entities.gun.into())
                 .expect("No `RevolverEntities` component found on gun entity");
 
             let body = data
@@ -29,50 +31,31 @@ impl<'a> System<'a> for EjectAnimationSystem {
                 .get_mut(revolver.body.into())
                 .expect("No `Transform` component for revolver body");
             let eject_keyframes = [
-                Quaternion::from(Euler::new(
-                    Rad(0.0),
-                    Rad(0.0),
-                    Rad(0.0),
-                )),
-
-                Quaternion::from(Euler::new(
-                    Rad(PI / 2.0),
-                    Rad(0.0),
-                    Rad(0.0),
-                )),
-
-                Quaternion::from(Euler::new(
-                    Rad(PI / 2.0),
-                    Rad(0.0),
-                    Rad(0.0),
-                )),
-
-                Quaternion::from(Euler::new(
-                    Rad(0.0),
-                    Rad(0.0),
-                    Rad(0.0),
-                )),
+                UnitQuaternion::identity(),
+                UnitQuaternion::from_euler_angles(PI / 2.0, 0.0, 0.0),
+                UnitQuaternion::from_euler_angles(PI / 2.0, 0.0, 0.0),
+                UnitQuaternion::identity(),
             ];
 
             match player.gun.cylinder_state {
-                CylinderState::Ejecting { remaining, keyframe, .. } => {
+                CylinderState::Ejecting {
+                    remaining,
+                    keyframe,
+                    ..
+                } => {
                     let remaining_millis = remaining * 1000.0;
                     let duration = EJECT_KEYFRAME_MILLIS[keyframe];
                     let t = 1.0 - (remaining_millis as f32 / duration as f32);
 
                     let from = eject_keyframes[keyframe];
                     let to = eject_keyframes[keyframe + 1];
-                    let orientation = from.nlerp(to, t);
+                    let orientation = from.nlerp(&to, t);
 
-                    body.rotation = orientation;
+                    body.set_rotation(orientation);
                 }
 
                 _ => {
-                    body.set_rotation(
-                        Rad(0.0),
-                        Rad(0.0),
-                        Rad(0.0),
-                    );
+                    body.set_rotation(UnitQuaternion::identity());
                 }
             }
         }

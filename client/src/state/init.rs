@@ -1,22 +1,9 @@
-use ::{
-    GltfCache,
-    PlayerLookup,
-    state::MainState,
-    ReadConnection,
-};
-use ::components::*;
-use amethyst::{
-    assets::PrefabLoader,
-    core::Transform,
-    ecs::prelude::*,
-    prelude::*,
-    renderer::*,
-};
+use amethyst::{assets::PrefabLoader, core::Transform, ecs::prelude::*, prelude::*, renderer::*};
 use amethyst_gltf::{GltfPrefab, GltfSceneFormat, GltfSceneOptions};
-use core::{
-    math::*,
-    ServerMessageBody,
-};
+use components::*;
+use core::math::*;
+use core::ServerMessageBody;
+use {state::MainState, GltfCache, PlayerLookup, ReadConnection};
 
 /// Game state that waits for the init message from the server.
 ///
@@ -27,7 +14,7 @@ use core::{
 #[derive(Debug)]
 pub struct InitState;
 
-impl<'a, 'b> SimpleState<'a, 'b> for InitState {
+impl SimpleState for InitState {
     fn on_start(&mut self, data: StateData<GameData>) {
         trace!("InitState::on_start()");
 
@@ -88,10 +75,7 @@ impl<'a, 'b> SimpleState<'a, 'b> for InitState {
 
         world
             .create_entity()
-            .with(Transform {
-                translation: Vector3::new(6.0, 6.0, -6.0),
-                .. Default::default()
-            })
+            .with(Transform::from(Vector3::new(6.0, 6.0, -6.0)))
             .with(Light::from(PointLight {
                 intensity: 6.0,
                 color: [0.8, 0.0, 0.0].into(),
@@ -101,10 +85,7 @@ impl<'a, 'b> SimpleState<'a, 'b> for InitState {
 
         world
             .create_entity()
-            .with(Transform {
-                translation: Vector3::new(0.0, 4.0, 4.0),
-                .. Default::default()
-            })
+            .with(Transform::from(Vector3::new(0.0, 4.0, 4.0)))
             .with(Light::from(PointLight {
                 intensity: 5.0,
                 color: [0.0, 0.3, 0.7].into(),
@@ -115,7 +96,7 @@ impl<'a, 'b> SimpleState<'a, 'b> for InitState {
         world.add_resource(AmbientColor(Rgba(0.2, 0.2, 0.2, 0.2)));
     }
 
-    fn update(&mut self, data: &mut StateData<GameData>) -> SimpleTrans<'a, 'b> {
+    fn update(&mut self, data: &mut StateData<GameData>) -> SimpleTrans {
         trace!("InitState::update()");
 
         #[derive(SystemData)]

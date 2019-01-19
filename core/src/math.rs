@@ -1,17 +1,5 @@
-pub use cgmath::{
-    Basis2,
-    Basis3,
-    Deg,
-    Euler,
-    Point1,
-    Point2,
-    Point3,
-    Quaternion,
-    Rad,
-    Rotation,
-    Vector1,
-    Vector2,
-    Vector3,
+pub use amethyst::core::nalgebra::{
+    Point1, Point2, Point3, UnitQuaternion, Rotation, Rotation2, Rotation3, Vector1, Vector2, Vector3,
     Vector4,
 };
 pub use std::f32::consts::PI;
@@ -24,14 +12,22 @@ pub trait Clamp {
 
 impl Clamp for f32 {
     fn clamp(self, min: Self, max: Self) -> Self {
-        if self < min { return min; } else if self > max { return max; }
+        if self < min {
+            return min;
+        } else if self > max {
+            return max;
+        }
         self
     }
 }
 
 impl Clamp for f64 {
     fn clamp(self, min: Self, max: Self) -> Self {
-        if self < min { return min; } else if self > max { return max; }
+        if self < min {
+            return min;
+        } else if self > max {
+            return max;
+        }
         self
     }
 }

@@ -11,24 +11,13 @@ extern crate sumi;
 extern crate tokio_core;
 
 use amethyst::{
-    core::frame_limiter::FrameRateLimitStrategy,
-    core::timing::Time,
-    ecs::prelude::*,
-    prelude::*,
+    core::frame_limiter::FrameRateLimitStrategy, core::timing::Time, ecs::prelude::*, prelude::*,
 };
-use core::{
-    *,
-    math::*,
-    player::Player,
-    revolver::*,
-};
-use crossbeam_channel::{Receiver};
+use core::{math::*, player::Player, revolver::*, *};
+use crossbeam_channel::Receiver;
 use futures::Stream;
 use rand::Rng;
-use std::{
-    thread,
-    time::Duration,
-};
+use std::{thread, time::Duration};
 use sumi::ConnectionListener;
 use tokio_core::reactor::Core;
 
@@ -39,12 +28,15 @@ struct Server {
     frame_count: usize,
 }
 
-impl<'a, 'b> State<GameData<'a, 'b>, ()> for Server {
-    fn update(&mut self, data: StateData<GameData>) -> SimpleTrans<'a, 'b> {
+impl SimpleState for Server {
+    fn update(&mut self, data: &mut StateData<GameData>) -> SimpleTrans {
         self.frame_count += 1;
 
         // Handle any new connections, adding a new player for the new client.
-        assert!(!self.new_connections.is_disconnected(), "New connections channel disconnected");
+        assert!(
+            !self.new_connections.is_disconnected(),
+            "New connections channel disconnected"
+        );
         for connection in self.new_connections.try_iter() {
             let id = rand::random();
             info!("New player joined and was assigned ID {:#x}", id);
@@ -106,15 +98,14 @@ impl<'a, 'b> State<GameData<'a, 'b>, ()> for Server {
             client.connection.send(ServerMessage {
                 server_frame: self.frame_count,
                 client_frame: 0,
-                body: ServerMessageBody::Init { id, world: client_world },
+                body: ServerMessageBody::Init {
+                    id,
+                    world: client_world,
+                },
             });
 
             // Add the client to the list of connected clients.
-            data
-                .world
-                .create_entity()
-                .with(client)
-                .build();
+            data.world.create_entity().with(client).build();
         }
 
         // Allow all systems to run.
@@ -181,11 +172,11 @@ fn main() -> ::amethyst::Result<()> {
                 Ok(())
             });
 
-        core.run(connection_listener).expect("Error waiting for connections");
+        core.run(connection_listener)
+            .expect("Error waiting for connections");
     });
 
-    let game_data = GameDataBuilder::default()
-        .with(PlayerSystem, "player_system", &[]);
+    let game_data = GameDataBuilder::default().with(PlayerSystem, "player_system", &[]);
 
     let server = Server {
         new_connections,
@@ -247,7 +238,9 @@ impl<'a> System<'a> for PlayerSystem {
                 info!("Disconnected from client {:#x}", client.id);
 
                 // Destroy the entity for the client.
-                entities.delete(entity).expect("Failed to delete client entity");
+                entities
+                    .delete(entity)
+                    .expect("Failed to delete client entity");
 
                 // Enqueue a broadcast notifying the remaining players that the player left.
                 broadcasts.push(ServerMessageBody::PlayerLeft { id: client.id });
@@ -262,7 +255,9 @@ impl<'a> System<'a> for PlayerSystem {
 
                 // If we receive the message out of order, straight up ignore it.
                 // TODO: Handle out of order messages within the protocol.
-                if message.frame < client.latest_frame { continue; }
+                if message.frame < client.latest_frame {
+                    continue;
+                }
 
                 // Update our local info on the latest client frame we've received.
                 client.latest_frame = message.frame;
@@ -270,7 +265,9 @@ impl<'a> System<'a> for PlayerSystem {
                 // Handle the actual contents of the message.
                 let player = &mut client.player;
                 match message.body {
-                    ClientMessageBody::Input(input) => { client.input = input; }
+                    ClientMessageBody::Input(input) => {
+                        client.input = input;
+                    }
                     ClientMessageBody::RevolverAction(action) => {
                         player.handle_revolver_action(action);
                     }

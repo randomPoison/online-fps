@@ -1,18 +1,8 @@
-use ::{
-    GltfCache,
-    PlayerLookup,
-    ReadConnection,
-};
-use ::components::*;
-use amethyst::{
-    ecs::prelude::*,
-    prelude::*,
-};
-use core::{
-    player::Player,
-    ServerMessageBody,
-};
+use amethyst::{ecs::prelude::*, prelude::*};
+use components::*;
+use core::{player::Player, ServerMessageBody};
 use std::collections::HashSet;
+use {GltfCache, PlayerLookup, ReadConnection};
 
 #[derive(Debug)]
 pub struct MainState {
@@ -20,8 +10,8 @@ pub struct MainState {
     pub frame: usize,
 }
 
-impl<'a, 'b> SimpleState<'a, 'b> for MainState {
-    fn update(&mut self, data: &mut StateData<GameData>) -> SimpleTrans<'a, 'b> {
+impl SimpleState for MainState {
+    fn update(&mut self, data: &mut StateData<GameData>) -> SimpleTrans {
         self.frame += 1;
 
         #[derive(SystemData)]
@@ -55,7 +45,9 @@ impl<'a, 'b> SimpleState<'a, 'b> for MainState {
                         for (id, server_player) in server_world.players {
                             // HACK: Skip any players that were added this frame. See above
                             // comment for more details.
-                            if new_players.contains(&id) { continue; }
+                            if new_players.contains(&id) {
+                                continue;
+                            }
 
                             // Find the root entity for the player so that we can update its
                             // `Player` component.
@@ -118,7 +110,9 @@ impl<'a, 'b> SimpleState<'a, 'b> for MainState {
 
                         for (player, entity) in (&data.players, &*data.entities).join() {
                             if player.id == id {
-                                data.entities.delete(entity).expect("Failed to delete player entity");
+                                data.entities
+                                    .delete(entity)
+                                    .expect("Failed to delete player entity");
                                 break;
                             }
                         }
