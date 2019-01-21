@@ -4,6 +4,7 @@ members = [
     "core/",
     "workers/server",
     "sumi/",
+    "setup/",
 ]
 
 [patch.crates-io]

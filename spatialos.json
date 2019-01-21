@@ -1,11 +1,5 @@
 {
-    "name": "online-fps",
-    "project_version": "0.1.0",
-    "sdk_version": "15.3.1",
-    "dependencies": [
-        {
-            "name": "standard_library",
-            "version": "15.3.1"
-        }
-    ]
+    "configurationVersion": "0.1",
+    "projectName": "online_fps",
+    "schemaDescriptor": "./schema/bin/schema.descriptor"
 }
