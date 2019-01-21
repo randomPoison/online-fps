@@ -1,56 +1,56 @@
 {
-    "template": "small",
-    "world": {
-        "chunkEdgeLengthMeters": 50,
-        "snapshots": {
-            "snapshotWritePeriodSeconds": 0
-        },
-        "dimensions": {
-            "xMeters": 1500,
-            "zMeters": 1500
-        }
+  "template": "small",
+  "world": {
+    "chunkEdgeLengthMeters": 50,
+    "snapshots": {
+      "snapshotWritePeriodSeconds": 0
     },
-    "workers": [
-        {
-            "worker_type": "AmethystWorker",
-            "load_balancing": {
-                "auto_hex_grid": {
-                    "num_workers": 1
-                }
-            },
-            "permissions": [
-                {
-                    "entity_creation": {
-                        "allow": true
-                    },
-                    "entity_deletion": {
-                        "allow": true
-                    },
-                    "entity_query": {
-                        "allow": true,
-                        "components": [
-                            "*"
-                        ]
-                    }
-                }
-            ]
-        },
-        {
-            "worker_type": "AmethystClient",
-            "permissions": [
-                {
-                    "entity_creation": {
-                        "allow": false
-                    },
-                    "entity_deletion": {
-                        "allow": false
-                    },
-                    "entity_query": {
-                        "allow": true,
-                        "components": []
-                    }
-                }
-            ]
+    "dimensions": {
+      "xMeters": 1500,
+      "zMeters": 1500
+    }
+  },
+  "workers": [
+    {
+      "worker_type": "RustWorker",
+      "load_balancing": {
+        "auto_hex_grid": {
+          "num_workers": 1
         }
-    ]
+      },
+      "permissions": [
+        {
+          "entity_creation": {
+            "allow": true
+          },
+          "entity_deletion": {
+            "allow": true
+          },
+          "entity_query": {
+            "allow": true,
+            "components": [
+              "*"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "worker_type": "RustClient",
+      "permissions": [
+        {
+          "entity_creation": {
+            "allow": false
+          },
+          "entity_deletion": {
+            "allow": false
+          },
+          "entity_query": {
+            "allow": true,
+            "components": []
+          }
+        }
+      ]
+    }
+  ]
 }
