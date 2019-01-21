@@ -1,0 +1,59 @@
+{
+  "workerType": "RustWorker",
+  "attributeSet": {
+    "attributes": [
+      "rusty-worker"
+    ]
+  },
+  "entity_interest": {
+    "range_entity_interest": {
+      "radius": 2
+    }
+  },
+  "componentDelivery": {
+    "default": "RELIABLE_ORDERED",
+    "checkout_all_initially": true
+  },
+  "launchConfiguration": {
+    "cloudDeployment": {
+      "linux": {
+        "localBuildDirectory": "./target/release/",
+        "command": "server",
+        "arguments": [
+          "${IMPROBABLE_RECEPTIONIST_HOST}",
+          "${IMPROBABLE_RECEPTIONIST_PORT}",
+          "${IMPROBABLE_WORKER_ID}"
+        ]
+      }
+    },
+    "localDeployment": {
+      "macos": {
+        "localBuildDirectory": "./target/release/",
+        "command": "server",
+        "arguments": [
+          "${IMPROBABLE_RECEPTIONIST_HOST}",
+          "${IMPROBABLE_RECEPTIONIST_PORT}",
+          "${IMPROBABLE_WORKER_ID}"
+        ]
+      },
+      "linux": {
+        "localBuildDirectory": "./target/release/",
+        "command": "server",
+        "arguments": [
+          "${IMPROBABLE_RECEPTIONIST_HOST}",
+          "${IMPROBABLE_RECEPTIONIST_PORT}",
+          "${IMPROBABLE_WORKER_ID}"
+        ]
+      },
+      "windows": {
+        "localBuildDirectory": "./target/release/",
+        "command": "server",
+        "arguments": [
+          "${IMPROBABLE_RECEPTIONIST_HOST}",
+          "${IMPROBABLE_RECEPTIONIST_PORT}",
+          "${IMPROBABLE_WORKER_ID}"
+        ]
+      }
+    }
+  }
+}
