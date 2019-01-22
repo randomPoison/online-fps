@@ -43,7 +43,7 @@
       },
       "windows": {
         "localBuildDirectory": "./target/release/",
-        "command": "server",
+        "command": "server.exe",
         "arguments": [
           "${IMPROBABLE_RECEPTIONIST_HOST}",
           "${IMPROBABLE_RECEPTIONIST_PORT}",
