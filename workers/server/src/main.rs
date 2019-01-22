@@ -11,6 +11,8 @@ use spatialos_sdk::worker::connection::Connection as SpatialConnection;
 use spatialos_sdk::worker::connection::WorkerConnection;
 use spatialos_sdk::worker::parameters::ConnectionParameters;
 use spatialos_sdk::worker::{EntityId, InterestOverride, LogLevel};
+use spatialos_sdk::worker::commands::CreateEntityRequest;
+use spatialos_sdk::worker::op::{StatusCode, WorkerOp};
 use std::{thread, time::Duration};
 use structopt::StructOpt;
 use sumi::ConnectionListener;
@@ -38,9 +40,24 @@ fn main() -> ::amethyst::Result<()> {
 
     connection.send_log_message(LogLevel::Info, "main", "Connected successfully!", None);
 
+    // Create a super cool entity on startup.
+    let request_id = connection.send_create_entity_request(CreateEntityRequest {}, None);
+
     // TODO: Fix up the actual server logic so that it works when running in SpatialOS.
     loop {
-        let _ = connection.get_op_list(0);
+        for op in &connection.get_op_list(0) {
+            match op {
+                WorkerOp::CreateEntityResponse(response) => {
+                    if response.request_id.id == request_id.id {
+                        if let StatusCode::Success(entity_id) = response.status_code {
+                            dbg!(entity_id);
+                        }
+                    }
+                }
+
+                _ => {}
+            }
+        }
     }
 
     // Initialize logging first so that we can start capturing logs immediately.
