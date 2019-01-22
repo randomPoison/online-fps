@@ -39,7 +39,9 @@ fn main() -> ::amethyst::Result<()> {
     connection.send_log_message(LogLevel::Info, "main", "Connected successfully!", None);
 
     // TODO: Fix up the actual server logic so that it works when running in SpatialOS.
-    loop {}
+    loop {
+        let _ = connection.get_op_list(0);
+    }
 
     // Initialize logging first so that we can start capturing logs immediately.
     // log4rs::init_file("../log4rs.toml", Default::default()).expect("Failed to init log4rs");
