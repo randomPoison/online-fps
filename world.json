@@ -3,7 +3,16 @@
     "x": 1000,
     "z": 1000
   },
-  "loadBalancing": {},
+  "loadBalancing": {
+    "layerConfigurations": [
+      {
+        "layer": "test_layer",
+        "hexGrid": {
+          "numWorkers": 2
+        }
+      }
+    ]
+  },
   "snapshot": {
     "takeSnapshotIntervalSeconds": 600,
     "startDeploymentFromSnapshotFile": "./snapshots/default.snapshot"

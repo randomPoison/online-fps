@@ -1,6 +1,6 @@
 {
   "configurationVersion": "0.1",
-  "projectName": "online_fps",
+  "projectName": "beta_apart_uranus_40",
   "schemaDescriptor": "./schema/bin/schema.descriptor",
   "serverWorkers": [
     "./rust_worker.json"

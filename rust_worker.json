@@ -1,10 +1,6 @@
 {
   "workerType": "RustWorker",
-  "attributeSet": {
-    "attributes": [
-      "rusty-worker"
-    ]
-  },
+  "layer": "test_layer",
   "entity_interest": {
     "range_entity_interest": {
       "radius": 2
