@@ -1,25 +1,88 @@
-extern crate amethyst;
-extern crate core;
-extern crate crossbeam_channel;
-extern crate futures;
-extern crate futures_cpupool;
-#[macro_use]
-extern crate log;
-extern crate log4rs;
-extern crate rand;
-extern crate sumi;
-extern crate tokio_core;
-
 use amethyst::{
     core::frame_limiter::FrameRateLimitStrategy, core::timing::Time, ecs::prelude::*, prelude::*,
 };
 use core::{math::*, player::Player, revolver::*, *};
 use crossbeam_channel::Receiver;
+use futures::Future;
 use futures::Stream;
+use log::*;
 use rand::Rng;
+use spatialos_sdk::worker::connection::Connection as SpatialConnection;
+use spatialos_sdk::worker::connection::WorkerConnection;
+use spatialos_sdk::worker::parameters::ConnectionParameters;
+use spatialos_sdk::worker::{EntityId, InterestOverride, LogLevel};
 use std::{thread, time::Duration};
+use structopt::StructOpt;
 use sumi::ConnectionListener;
 use tokio_core::reactor::Core;
+
+fn main() -> ::amethyst::Result<()> {
+    // Parse command line arguments.
+    let config = Opt::from_args();
+
+    // Connect to the SpatialOS load balancer asynchronously.
+    let params = ConnectionParameters::new("RustWorker").using_tcp();
+    let future = WorkerConnection::connect_receptionist_async(
+        &config.worker_id,
+        &config.host,
+        config.port,
+        &params,
+    );
+
+    // Wait for the connection to resolve.
+    let mut connection = future
+        .wait()
+        .expect("Failed to establish connection to SpatialOS");
+
+    dbg!(connection.get_worker_id());
+
+    connection.send_log_message(LogLevel::Info, "main", "Connected successfully!", None);
+
+    // TODO: Fix up the actual server logic so that it works when running in SpatialOS.
+    loop {}
+
+    // Initialize logging first so that we can start capturing logs immediately.
+    // log4rs::init_file("../log4rs.toml", Default::default()).expect("Failed to init log4rs");
+
+    let (connection_sender, new_connections) = crossbeam_channel::bounded(8);
+    thread::spawn(move || {
+        // Create the event loop that will drive network communication.
+        let mut core = Core::new().unwrap();
+        let handle = core.handle();
+
+        // Spawn the connection listener onto the reactor and create a new `Stream` that yields each
+        // connection as it is received.
+        let connection_listener = ConnectionListener::bind("127.0.0.1:1234", &core.handle())
+            .expect("Failed to bind socket")
+            .map(move |connection| Connection::new(connection, &handle))
+            .for_each(move |connection| {
+                connection_sender
+                    .try_send(connection)
+                    .expect("Failed to send new connection to main thread");
+                Ok(())
+            });
+
+        core.run(connection_listener)
+            .expect("Error waiting for connections");
+    });
+
+    let game_data = GameDataBuilder::default().with(PlayerSystem, "player_system", &[]);
+
+    let server = Server {
+        new_connections,
+        frame_count: 0,
+    };
+
+    Application::build("./", server)?
+        .with_frame_limit(
+            FrameRateLimitStrategy::SleepAndYield(Duration::from_millis(2)),
+            60,
+        )
+        .build(game_data)?
+        .run();
+
+    Ok(())
+}
 
 type Broadcasts = Vec<ServerMessageBody>;
 
@@ -65,7 +128,7 @@ impl SimpleState for Server {
                 let mut players = ::std::collections::HashMap::new();
 
                 // Add all existing players to the world state.
-                let mut clients = data.world.write_storage::<Client>();
+                let clients = data.world.write_storage::<Client>();
                 for client in (&clients).join() {
                     players.insert(client.id, client.player.clone());
                 }
@@ -150,48 +213,17 @@ impl SimpleState for Server {
     }
 }
 
-fn main() -> ::amethyst::Result<()> {
-    // Initialize logging first so that we can start capturing logs immediately.
-    log4rs::init_file("../log4rs.toml", Default::default()).expect("Failed to init log4rs");
+#[derive(Debug, StructOpt)]
+#[structopt(name = "server", about = "The server worker.")]
+struct Opt {
+    /// Hostname to connect to.
+    host: String,
 
-    let (connection_sender, new_connections) = crossbeam_channel::bounded(8);
-    thread::spawn(move || {
-        // Create the event loop that will drive network communication.
-        let mut core = Core::new().unwrap();
-        let handle = core.handle();
+    /// Port number to connect to.
+    port: u16,
 
-        // Spawn the connection listener onto the reactor and create a new `Stream` that yields each
-        // connection as it is received.
-        let connection_listener = ConnectionListener::bind("127.0.0.1:1234", &core.handle())
-            .expect("Failed to bind socket")
-            .map(move |connection| Connection::new(connection, &handle))
-            .for_each(move |connection| {
-                connection_sender
-                    .try_send(connection)
-                    .expect("Failed to send new connection to main thread");
-                Ok(())
-            });
-
-        core.run(connection_listener)
-            .expect("Error waiting for connections");
-    });
-
-    let game_data = GameDataBuilder::default().with(PlayerSystem, "player_system", &[]);
-
-    let server = Server {
-        new_connections,
-        frame_count: 0,
-    };
-
-    Application::build("./", server)?
-        .with_frame_limit(
-            FrameRateLimitStrategy::SleepAndYield(Duration::from_millis(2)),
-            60,
-        )
-        .build(game_data)?
-        .run();
-
-    Ok(())
+    /// Worker ID for the current worker instance.
+    worker_id: String,
 }
 
 /// Represents a connected client and its associated state.
