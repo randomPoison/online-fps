@@ -13,17 +13,26 @@ use spatialos_sdk::worker::parameters::ConnectionParameters;
 use spatialos_sdk::worker::{EntityId, InterestOverride, LogLevel};
 use spatialos_sdk::worker::commands::CreateEntityRequest;
 use spatialos_sdk::worker::op::{StatusCode, WorkerOp};
+use spatialos_sdk::worker::component::ComponentDatabase;
 use std::{thread, time::Duration};
 use structopt::StructOpt;
 use sumi::ConnectionListener;
 use tokio_core::reactor::Core;
+
+mod generated;
 
 fn main() -> ::amethyst::Result<()> {
     // Parse command line arguments.
     let config = Opt::from_args();
 
     // Connect to the SpatialOS load balancer asynchronously.
-    let params = ConnectionParameters::new("RustWorker").using_tcp();
+    let components = ComponentDatabase::new()
+        .add_component::<generated::improbable::Position>()
+        .add_component::<generated::improbable::EntityAcl>()
+        .add_component::<generated::improbable::Interest>()
+        .add_component::<generated::improbable::Metadata>()
+        .add_component::<generated::improbable::Persistence>();
+    let params = ConnectionParameters::new("RustWorker", components).using_tcp();
     let future = WorkerConnection::connect_receptionist_async(
         &config.worker_id,
         &config.host,
@@ -40,18 +49,13 @@ fn main() -> ::amethyst::Result<()> {
 
     connection.send_log_message(LogLevel::Info, "main", "Connected successfully!", None);
 
-    // Create a super cool entity on startup.
-    let request_id = connection.send_create_entity_request(CreateEntityRequest {}, None);
-
     // TODO: Fix up the actual server logic so that it works when running in SpatialOS.
     loop {
         for op in &connection.get_op_list(0) {
             match op {
                 WorkerOp::CreateEntityResponse(response) => {
-                    if response.request_id.id == request_id.id {
-                        if let StatusCode::Success(entity_id) = response.status_code {
-                            dbg!(entity_id);
-                        }
+                    if let StatusCode::Success(entity_id) = response.status_code {
+                        dbg!(entity_id);
                     }
                 }
 

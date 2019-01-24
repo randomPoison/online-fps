@@ -15,5 +15,5 @@ log4rs = { version = "0.8", features = ["toml_format"] }
 rand = "0.4.1"
 sumi = { path = "../../sumi" }
 tokio-core = "0.1.17"
-spatialos-sdk = { git = "https://github.com/jamiebrynes7/spatialos-sdk-rs", rev = "6256102" }
+spatialos-sdk = { git = "https://github.com/jamiebrynes7/spatialos-sdk-rs", rev = "5890ab1" }
 structopt = "0.2.14"

@@ -6,7 +6,3 @@ members = [
     "sumi/",
     "setup/",
 ]
-
-[patch.crates-io]
-amethyst = { git = "https://github.com/randomPoison/amethyst", rev = "e330c40" }
-amethyst_gltf = { git = "https://github.com/randomPoison/amethyst", rev = "e330c40" }

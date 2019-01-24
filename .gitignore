@@ -5,3 +5,4 @@
 logs/
 .improbable/
 schema/bin/
+workers/server/src/generated.rs
