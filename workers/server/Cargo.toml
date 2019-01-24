@@ -17,3 +17,4 @@ sumi = { path = "../../sumi" }
 tokio-core = "0.1.17"
 spatialos-sdk = { git = "https://github.com/jamiebrynes7/spatialos-sdk-rs", rev = "5890ab1" }
 structopt = "0.2.14"
+ctrlc = "3.1.1"

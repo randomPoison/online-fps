@@ -18,10 +18,13 @@ use std::{thread, time::Duration};
 use structopt::StructOpt;
 use sumi::ConnectionListener;
 use tokio_core::reactor::Core;
+use std::sync::atomic::{Ordering, AtomicBool};
 
 mod generated;
 
 fn main() -> ::amethyst::Result<()> {
+    static RUNNING: AtomicBool = AtomicBool::new(true);
+
     // Parse command line arguments.
     let config = Opt::from_args();
 
@@ -49,8 +52,14 @@ fn main() -> ::amethyst::Result<()> {
 
     connection.send_log_message(LogLevel::Info, "main", "Connected successfully!", None);
 
+    // HACK: Make sure the game exits if we get a SIGINT. This should be handled by
+    // Amethyst once we can switch back to using it.
+    ctrlc::set_handler(move || {
+        RUNNING.store(false, Ordering::SeqCst);
+    }).expect("Error setting Ctrl-C handler");
+
     // TODO: Fix up the actual server logic so that it works when running in SpatialOS.
-    loop {
+    'main: while RUNNING.load(Ordering::SeqCst) {
         for op in &connection.get_op_list(0) {
             match op {
                 WorkerOp::CreateEntityResponse(response) => {
@@ -59,10 +68,17 @@ fn main() -> ::amethyst::Result<()> {
                     }
                 }
 
+                WorkerOp::Disconnect(disconnect_op) => {
+                    dbg!(&disconnect_op.reason);
+                    break 'main;
+                }
+
                 _ => {}
             }
         }
     }
+
+    /*
 
     // Initialize logging first so that we can start capturing logs immediately.
     // log4rs::init_file("../log4rs.toml", Default::default()).expect("Failed to init log4rs");
@@ -103,6 +119,7 @@ fn main() -> ::amethyst::Result<()> {
         )
         .build(game_data)?
         .run();
+    */
 
     Ok(())
 }
