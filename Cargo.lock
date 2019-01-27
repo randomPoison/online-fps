@@ -2888,9 +2888,10 @@ dependencies = [
  "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "log4rs 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "spatialos-sdk 0.0.0 (git+https://github.com/jamiebrynes7/spatialos-sdk-rs?rev=5890ab1)",
+ "spatialos-sdk 0.0.0 (git+https://github.com/jamiebrynes7/spatialos-sdk-rs?rev=0dbe81d)",
  "structopt 0.2.14 (registry+https://github.com/rust-lang/crates.io-index)",
  "sumi 0.1.0",
+ "tap 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-core 0.1.17 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
@@ -3036,16 +3037,16 @@ dependencies = [
 [[package]]
 name = "spatialos-sdk"
 version = "0.0.0"
-source = "git+https://github.com/jamiebrynes7/spatialos-sdk-rs?rev=5890ab1#5890ab1f9ce0d93926ac46ac3502b949701eb3c5"
+source = "git+https://github.com/jamiebrynes7/spatialos-sdk-rs?rev=0dbe81d#0dbe81d68175f7357ea2f67001bf67eb9104ec3a"
 dependencies = [
  "futures 0.1.25 (registry+https://github.com/rust-lang/crates.io-index)",
- "spatialos-sdk-sys 13.5.1 (git+https://github.com/jamiebrynes7/spatialos-sdk-rs?rev=5890ab1)",
+ "spatialos-sdk-sys 13.5.1 (git+https://github.com/jamiebrynes7/spatialos-sdk-rs?rev=0dbe81d)",
 ]
 
 [[package]]
 name = "spatialos-sdk-sys"
 version = "13.5.1"
-source = "git+https://github.com/jamiebrynes7/spatialos-sdk-rs?rev=5890ab1#5890ab1f9ce0d93926ac46ac3502b949701eb3c5"
+source = "git+https://github.com/jamiebrynes7/spatialos-sdk-rs?rev=0dbe81d#0dbe81d68175f7357ea2f67001bf67eb9104ec3a"
 dependencies = [
  "lazy_static 1.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -4096,8 +4097,8 @@ dependencies = [
 "checksum slice-deque 0.1.16 (registry+https://github.com/rust-lang/crates.io-index)" = "d39fca478d10e201944a8e21f4393d6bfe38fa3b16a152050e4d097fe2bbf494"
 "checksum smallvec 0.6.7 (registry+https://github.com/rust-lang/crates.io-index)" = "b73ea3738b47563803ef814925e69be00799a8c07420be8b996f8e98fb2336db"
 "checksum smithay-client-toolkit 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)" = "d858330eeed4efaf71c560555e2a6a0597d01b7d52685c3cc964ab1cc360f8c6"
-"checksum spatialos-sdk 0.0.0 (git+https://github.com/jamiebrynes7/spatialos-sdk-rs?rev=5890ab1)" = "<none>"
-"checksum spatialos-sdk-sys 13.5.1 (git+https://github.com/jamiebrynes7/spatialos-sdk-rs?rev=5890ab1)" = "<none>"
+"checksum spatialos-sdk 0.0.0 (git+https://github.com/jamiebrynes7/spatialos-sdk-rs?rev=0dbe81d)" = "<none>"
+"checksum spatialos-sdk-sys 13.5.1 (git+https://github.com/jamiebrynes7/spatialos-sdk-rs?rev=0dbe81d)" = "<none>"
 "checksum specs 0.14.1 (registry+https://github.com/rust-lang/crates.io-index)" = "a06df46b79dafa300305d7bddb756557d44385e5f8b311fa640bbfa2c748a358"
 "checksum specs-hierarchy 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)" = "e2dd04f2ea6d142cc4184ca2a7c353e3c51f27916ba055fec505e323b310e7d6"
 "checksum stable_deref_trait 1.1.1 (registry+https://github.com/rust-lang/crates.io-index)" = "dba1a27d3efae4351c8051072d619e3ade2820635c3958d826bfea39d59b54c8"

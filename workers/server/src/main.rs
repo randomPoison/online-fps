@@ -5,20 +5,26 @@ use core::{math::*, player::Player, revolver::*, *};
 use crossbeam_channel::Receiver;
 use futures::Future;
 use futures::Stream;
+use generated::improbable;
 use log::*;
 use rand::Rng;
-use spatialos_sdk::worker::connection::Connection as SpatialConnection;
-use spatialos_sdk::worker::connection::WorkerConnection;
-use spatialos_sdk::worker::parameters::ConnectionParameters;
-use spatialos_sdk::worker::{EntityId, InterestOverride, LogLevel};
-use spatialos_sdk::worker::commands::CreateEntityRequest;
-use spatialos_sdk::worker::op::{StatusCode, WorkerOp};
-use spatialos_sdk::worker::component::ComponentDatabase;
+use spatialos_sdk::worker::{
+    commands::CreateEntityRequest,
+    component::{Component as SpatialComponent, ComponentDatabase},
+    connection::Connection as SpatialConnection,
+    connection::WorkerConnection,
+    entity::Entity,
+    op::{StatusCode, WorkerOp},
+    parameters::ConnectionParameters,
+    {EntityId, InterestOverride, LogLevel},
+};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{thread, time::Duration};
 use structopt::StructOpt;
 use sumi::ConnectionListener;
+use tap::*;
 use tokio_core::reactor::Core;
-use std::sync::atomic::{Ordering, AtomicBool};
 
 mod generated;
 
@@ -52,15 +58,45 @@ fn main() -> ::amethyst::Result<()> {
 
     connection.send_log_message(LogLevel::Info, "main", "Connected successfully!", None);
 
+    // Create a super cool entity on startup.
+    let mut entity = Entity::new();
+    entity.add(improbable::Position {
+        coords: improbable::Coordinates {
+            x: 10.0,
+            y: 12.0,
+            z: 0.0,
+        },
+    });
+    entity.add(improbable::EntityAcl {
+        read_acl: improbable::WorkerRequirementSet {
+            attribute_set: vec![improbable::WorkerAttributeSet {
+                attribute: vec!["rusty".into()],
+            }],
+        },
+        component_write_acl: BTreeMap::new().tap(|writes| {
+            writes.insert(
+                improbable::Position::ID,
+                improbable::WorkerRequirementSet {
+                    attribute_set: vec![improbable::WorkerAttributeSet {
+                        attribute: vec!["rusty".into()],
+                    }],
+                },
+            );
+        }),
+    });
+    let create_request_id = connection.send_create_entity_request(entity, None, None);
+
     // HACK: Make sure the game exits if we get a SIGINT. This should be handled by
     // Amethyst once we can switch back to using it.
     ctrlc::set_handler(move || {
         RUNNING.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
+    })
+    .expect("Error setting Ctrl-C handler");
 
     // TODO: Fix up the actual server logic so that it works when running in SpatialOS.
     'main: while RUNNING.load(Ordering::SeqCst) {
         for op in &connection.get_op_list(0) {
+            dbg!(op);
             match op {
                 WorkerOp::CreateEntityResponse(response) => {
                     if let StatusCode::Success(entity_id) = response.status_code {
