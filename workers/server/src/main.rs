@@ -41,7 +41,7 @@ fn main() -> ::amethyst::Result<()> {
         .add_component::<generated::improbable::Interest>()
         .add_component::<generated::improbable::Metadata>()
         .add_component::<generated::improbable::Persistence>();
-    let params = ConnectionParameters::new("RustWorker", components).using_tcp();
+    let params = ConnectionParameters::new("ServerWorker", components).using_tcp();
     let future = WorkerConnection::connect_receptionist_async(
         &config.worker_id,
         &config.host,
@@ -54,7 +54,7 @@ fn main() -> ::amethyst::Result<()> {
         .wait()
         .expect("Failed to establish connection to SpatialOS");
 
-    dbg!(connection.get_worker_id());
+    println!("{:#?}", connection.get_worker_id());
 
     connection.send_log_message(LogLevel::Info, "main", "Connected successfully!", None);
 
@@ -70,7 +70,7 @@ fn main() -> ::amethyst::Result<()> {
     entity.add(improbable::EntityAcl {
         read_acl: improbable::WorkerRequirementSet {
             attribute_set: vec![improbable::WorkerAttributeSet {
-                attribute: vec!["rusty".into()],
+                attribute: vec!["server".into()],
             }],
         },
         component_write_acl: BTreeMap::new().tap(|writes| {
@@ -78,7 +78,7 @@ fn main() -> ::amethyst::Result<()> {
                 improbable::Position::ID,
                 improbable::WorkerRequirementSet {
                     attribute_set: vec![improbable::WorkerAttributeSet {
-                        attribute: vec!["rusty".into()],
+                        attribute: vec!["server".into()],
                     }],
                 },
             );
@@ -96,16 +96,22 @@ fn main() -> ::amethyst::Result<()> {
     // TODO: Fix up the actual server logic so that it works when running in SpatialOS.
     'main: while RUNNING.load(Ordering::SeqCst) {
         for op in &connection.get_op_list(0) {
-            dbg!(op);
+            println!("{:#?}", op);
             match op {
                 WorkerOp::CreateEntityResponse(response) => {
                     if let StatusCode::Success(entity_id) = response.status_code {
-                        dbg!(entity_id);
+                        if response.request_id == create_request_id {
+                            println!("Created entity {:?}", entity_id);
+                        } else {
+                            println!("Some random thing created entity: {:?}", entity_id)
+                        }
+                    } else {
+                        eprintln!("Error creating entity: {:?}", response.status_code);
                     }
                 }
 
                 WorkerOp::Disconnect(disconnect_op) => {
-                    dbg!(&disconnect_op.reason);
+                    println!("{:#?}", &disconnect_op.reason);
                     break 'main;
                 }
 

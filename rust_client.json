@@ -1,8 +1,8 @@
 {
-  "workerType": "RustClient",
+  "workerType": "Client",
   "attributeSet": {
     "attributes": [
-      "rusty-client"
+      "client"
     ]
   },
   "entity_interest": {

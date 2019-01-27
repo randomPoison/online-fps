@@ -6,9 +6,9 @@
   "loadBalancing": {
     "layerConfigurations": [
       {
-        "layer": "test_layer",
+        "layer": "server",
         "hexGrid": {
-          "numWorkers": 2
+          "numWorkers": 1
         }
       }
     ]
@@ -16,16 +16,5 @@
   "snapshot": {
     "takeSnapshotIntervalSeconds": 600,
     "startDeploymentFromSnapshotFile": "./snapshots/default.snapshot"
-  },
-  "workerFlags": [
-    {
-      "workerType": "RustWorker",
-      "flags": [
-        {
-          "name": "my-flag",
-          "value": "super-cool-value"
-        }
-      ]
-    }
-  ]
+  }
 }

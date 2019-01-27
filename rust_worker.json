@@ -1,10 +1,13 @@
 {
-  "workerType": "RustWorker",
-  "layer": "test_layer",
+  "workerType": "ServerWorker",
+  "layer": "server",
   "entity_interest": {
     "range_entity_interest": {
       "radius": 2
     }
+  },
+  "permissions": {
+    "all": {}
   },
   "componentDelivery": {
     "default": "RELIABLE_ORDERED",
