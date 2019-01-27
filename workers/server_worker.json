@@ -16,7 +16,7 @@
   "launchConfiguration": {
     "cloudDeployment": {
       "linux": {
-        "localBuildDirectory": "./target/release/",
+        "localBuildDirectory": "../build/release/",
         "command": "server",
         "arguments": [
           "${IMPROBABLE_RECEPTIONIST_HOST}",
@@ -27,7 +27,7 @@
     },
     "localDeployment": {
       "macos": {
-        "localBuildDirectory": "./target/release/",
+        "localBuildDirectory": "../build/debug/",
         "command": "server",
         "arguments": [
           "${IMPROBABLE_RECEPTIONIST_HOST}",
@@ -36,7 +36,7 @@
         ]
       },
       "linux": {
-        "localBuildDirectory": "./target/release/",
+        "localBuildDirectory": "../build/debug/",
         "command": "server",
         "arguments": [
           "${IMPROBABLE_RECEPTIONIST_HOST}",
@@ -45,7 +45,7 @@
         ]
       },
       "windows": {
-        "localBuildDirectory": "./target/release/",
+        "localBuildDirectory": "../build/debug/",
         "command": "server.exe",
         "arguments": [
           "${IMPROBABLE_RECEPTIONIST_HOST}",

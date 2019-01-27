@@ -7,8 +7,9 @@
     "layerConfigurations": [
       {
         "layer": "server",
-        "hexGrid": {
-          "numWorkers": 1
+        "rectangle_grid": {
+          "cols": 3,
+          "rows": 3
         }
       }
     ]

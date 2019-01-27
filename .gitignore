@@ -1,8 +1,12 @@
+# Rust directories and files.
 /target/
 **/*.rs.bk
 .idea/
 *.blend1
+
+# SpatialOS directories and files.
 logs/
 .improbable/
 schema/bin/
 workers/server/src/generated.rs
+build/

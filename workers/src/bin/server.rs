@@ -5,7 +5,6 @@ use core::{math::*, player::Player, revolver::*, *};
 use crossbeam_channel::Receiver;
 use futures::Future;
 use futures::Stream;
-use generated::improbable;
 use log::*;
 use rand::Rng;
 use spatialos_sdk::worker::{
@@ -25,8 +24,7 @@ use structopt::StructOpt;
 use sumi::ConnectionListener;
 use tap::*;
 use tokio_core::reactor::Core;
-
-mod generated;
+use workers::generated::improbable;
 
 fn main() -> ::amethyst::Result<()> {
     static RUNNING: AtomicBool = AtomicBool::new(true);
@@ -36,11 +34,11 @@ fn main() -> ::amethyst::Result<()> {
 
     // Connect to the SpatialOS load balancer asynchronously.
     let components = ComponentDatabase::new()
-        .add_component::<generated::improbable::Position>()
-        .add_component::<generated::improbable::EntityAcl>()
-        .add_component::<generated::improbable::Interest>()
-        .add_component::<generated::improbable::Metadata>()
-        .add_component::<generated::improbable::Persistence>();
+        .add_component::<improbable::Position>()
+        .add_component::<improbable::EntityAcl>()
+        .add_component::<improbable::Interest>()
+        .add_component::<improbable::Metadata>()
+        .add_component::<improbable::Persistence>();
     let params = ConnectionParameters::new("ServerWorker", components).using_tcp();
     let future = WorkerConnection::connect_receptionist_async(
         &config.worker_id,
