@@ -8,7 +8,7 @@ addons:
         - libasound2-dev
 
 before_script:
-  - wget https://console.improbable.io/toolbelt/download/latest/linux
+  - wget -O spatial https://console.improbable.io/toolbelt/download/latest/linux
   - export PATH=$PWD:$PATH
   - cargo install --git https://github.com/jamiebrynes7/spatialos-sdk-rs spatialos-sdk-tools
   - download_sdk -d sdk -s 13.5.1
