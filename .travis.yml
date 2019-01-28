@@ -9,6 +9,7 @@ addons:
 
 before_script:
   - wget -O spatial https://console.improbable.io/toolbelt/download/latest/linux
+  - chmod +x spatial
   - export PATH=$PWD:$PATH
   - cargo install --git https://github.com/jamiebrynes7/spatialos-sdk-rs spatialos-sdk-tools
   - download_sdk -d sdk -s 13.5.1
