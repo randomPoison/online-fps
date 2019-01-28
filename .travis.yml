@@ -11,6 +11,8 @@ before_script:
   - wget -O spatial https://console.improbable.io/toolbelt/download/latest/linux
   - chmod +x spatial
   - export PATH=$PWD:$PATH
+  - mkdir -p $HOME/.improbable/oauth2
+  - echo $SPATIAL_OAUTH > $HOME/.improbable/oauth2/oauth2_refresh_token
   - cargo install --git https://github.com/jamiebrynes7/spatialos-sdk-rs spatialos-sdk-tools
   - download_sdk -d sdk -s 13.5.1
   - export SPATIAL_LIB_DIR=$PWD/sdk
