@@ -1,23 +1,14 @@
-use std::process::Command;
+use crate::opt::*;
+use structopt::StructOpt;
+
+mod local;
+mod opt;
 
 fn main() {
-    Command::new("cargo")
-        .arg("install")
-        .arg("--path")
-        .arg("./workers")
-        .arg("--bin")
-        .arg("server")
-        .arg("--root")
-        .arg("./build/debug")
-        .arg("--debug")
-        .arg("--force")
-        .status()
-        .expect("Failed to build worker bin");
-
-    Command::new("spatial")
-        .arg("local")
-        .arg("launch")
-        .arg("--launch_config=deployment.json")
-        .status()
-        .expect("Failed to run spatial");
+    let opt = Opt::from_args();
+    match &opt.command {
+        Command::Local(local) => match local {
+            Local::Launch(launch) => local::launch(&opt, local, launch),
+        },
+    }
 }
