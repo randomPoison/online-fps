@@ -1,0 +1,8 @@
+[package]
+name = "cargo-spatial"
+version = "0.1.0"
+authors = ["David LeGare <dlegare.1001@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+structopt = "0.2.14"

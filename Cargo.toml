@@ -5,4 +5,5 @@ members = [
     "workers/",
     "sumi/",
     "setup/",
+    "cargo-spatial/",
 ]

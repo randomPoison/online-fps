@@ -17,7 +17,7 @@
     "cloudDeployment": {
       "linux": {
         "localBuildDirectory": "../build/release/",
-        "command": "server",
+        "command": "bin/server",
         "arguments": [
           "${IMPROBABLE_RECEPTIONIST_HOST}",
           "${IMPROBABLE_RECEPTIONIST_PORT}",
@@ -28,7 +28,7 @@
     "localDeployment": {
       "macos": {
         "localBuildDirectory": "../build/debug/",
-        "command": "server",
+        "command": "bin/server",
         "arguments": [
           "${IMPROBABLE_RECEPTIONIST_HOST}",
           "${IMPROBABLE_RECEPTIONIST_PORT}",
@@ -37,7 +37,7 @@
       },
       "linux": {
         "localBuildDirectory": "../build/debug/",
-        "command": "server",
+        "command": "bin/server",
         "arguments": [
           "${IMPROBABLE_RECEPTIONIST_HOST}",
           "${IMPROBABLE_RECEPTIONIST_PORT}",
@@ -46,7 +46,7 @@
       },
       "windows": {
         "localBuildDirectory": "../build/debug/",
-        "command": "server.exe",
+        "command": "bin/server.exe",
         "arguments": [
           "${IMPROBABLE_RECEPTIONIST_HOST}",
           "${IMPROBABLE_RECEPTIONIST_PORT}",

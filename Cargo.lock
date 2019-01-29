@@ -529,6 +529,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-spatial"
+version = "0.1.0"
+dependencies = [
+ "structopt 0.2.14 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "cargo_metadata"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
