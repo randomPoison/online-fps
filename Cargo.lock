@@ -661,6 +661,7 @@ dependencies = [
  "serde 1.0.83 (registry+https://github.com/rust-lang/crates.io-index)",
  "shred 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "shred-derive 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "spatialos-sdk 0.0.0 (git+https://github.com/jamiebrynes7/spatialos-sdk-rs?rev=0dbe81d)",
  "sumi 0.1.0",
  "tap 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio-core 0.1.17 (registry+https://github.com/rust-lang/crates.io-index)",

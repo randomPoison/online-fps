@@ -4,23 +4,7 @@
 #![cfg_attr(feature = "no_console", windows_subsystem = "windows")]
 #![warn(bare_trait_objects)]
 
-extern crate amethyst;
-extern crate amethyst_editor_sync;
-extern crate amethyst_gltf;
-extern crate core;
-extern crate futures;
-#[macro_use]
-extern crate log;
-extern crate log4rs;
-#[macro_use]
-extern crate serde;
-extern crate shred;
-#[macro_use]
-extern crate shred_derive;
-extern crate sumi;
-extern crate tap;
-extern crate tokio_core;
-
+use crate::{state::InitState, systems::*};
 use amethyst::{
     assets::Handle,
     core::{
@@ -39,12 +23,19 @@ use core::math::*;
 use core::player::*;
 use core::*;
 use futures::{prelude::*, sync::oneshot};
+use log::*;
+use serde::*;
+use spatialos_sdk::worker::{
+    component::ComponentDatabase,
+    connection::WorkerConnection,
+    locator::{Locator, LocatorParameters},
+    parameters::ConnectionParameters,
+};
 use std::thread;
 use std::time::Duration;
 use tap::*;
 use tokio_core::reactor::Core;
 use waiting_late_init::*;
-use {state::InitState, systems::*};
 
 mod components;
 mod state;

@@ -1,9 +1,10 @@
 use amethyst::core::*;
 use amethyst::ecs::*;
-use components::*;
+use crate::components::*;
 use core::math::*;
 use core::player::*;
 use core::revolver::*;
+use shred_derive::*;
 
 #[derive(Debug, Copy, Clone, Default)]
 pub struct EjectAnimationSystem;

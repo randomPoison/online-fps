@@ -1,6 +1,8 @@
 use amethyst::core::{Named, Parent};
 use amethyst::ecs::prelude::*;
 use amethyst_editor_sync::SerializableEntity;
+use log::*;
+use serde::*;
 
 pub use self::biped_entities::*;
 pub use self::revolver_entities::*;
@@ -36,7 +38,9 @@ pub fn find_named_child<'a>(
             trace!("Descending search into child {:?}", child);
 
             let maybe_result = find_named_child(child, name, entities, names, parents);
-            if maybe_result.is_some() { return maybe_result; }
+            if maybe_result.is_some() {
+                return maybe_result;
+            }
         }
     }
 

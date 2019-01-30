@@ -1,5 +1,6 @@
+use crate::components::*;
 use amethyst::{core::Transform, ecs::prelude::*};
-use components::*;
+use shred_derive::*;
 
 #[derive(Debug, Default)]
 pub struct PlayerPitchSystem;

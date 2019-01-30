@@ -1,14 +1,11 @@
-use ::{FrameId, WriteConnection};
-use ::components::*;
-use amethyst::{
-    input::InputEvent,
-    shrev::EventChannel,
-    ecs::*,
-    input::InputHandler,
-};
-use core::*;
+use crate::components::*;
+use crate::{FrameId, WriteConnection};
+use amethyst::{ecs::*, input::InputEvent, input::InputHandler, shrev::EventChannel};
 use core::math::*;
 use core::revolver::*;
+use core::*;
+use log::*;
+use shred_derive::*;
 
 #[derive(Debug, Default)]
 pub struct PlayerInputSystem {
@@ -61,9 +58,7 @@ impl<'s> System<'s> for PlayerInputSystem {
                         trace!("Toggling cylinder");
                         data.connection.send(ClientMessage {
                             frame: data.frame_id.0,
-                            body: ClientMessageBody::RevolverAction(
-                                RevolverAction::ToggleCylinder,
-                            ),
+                            body: ClientMessageBody::RevolverAction(RevolverAction::ToggleCylinder),
                         });
                     }
 
@@ -81,9 +76,7 @@ impl<'s> System<'s> for PlayerInputSystem {
                         trace!("Loading cartridge");
                         data.connection.send(ClientMessage {
                             frame: data.frame_id.0,
-                            body: ClientMessageBody::RevolverAction(
-                                RevolverAction::LoadCartridge,
-                            ),
+                            body: ClientMessageBody::RevolverAction(RevolverAction::LoadCartridge),
                         });
                     }
 
@@ -91,9 +84,7 @@ impl<'s> System<'s> for PlayerInputSystem {
                         trace!("Pulling trigger");
                         data.connection.send(ClientMessage {
                             frame: data.frame_id.0,
-                            body: ClientMessageBody::RevolverAction(
-                                RevolverAction::PullTrigger,
-                            ),
+                            body: ClientMessageBody::RevolverAction(RevolverAction::PullTrigger),
                         });
                     }
 
@@ -101,14 +92,12 @@ impl<'s> System<'s> for PlayerInputSystem {
                         trace!("Pulling hammer");
                         data.connection.send(ClientMessage {
                             frame: data.frame_id.0,
-                            body: ClientMessageBody::RevolverAction(
-                                RevolverAction::PullHammer,
-                            ),
+                            body: ClientMessageBody::RevolverAction(RevolverAction::PullHammer),
                         });
                     }
 
                     _ => warn!("Unexpected action: {}", action),
-                }
+                },
 
                 _ => trace!("Unused input event: {:?}", event),
             }

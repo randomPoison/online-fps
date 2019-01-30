@@ -1,6 +1,8 @@
-use ::waiting_late_init::*;
+use crate::waiting_late_init::*;
 use amethyst::ecs::prelude::*;
+use shred_derive::*;
 use std::marker::PhantomData;
+use log::*;
 
 #[derive(Debug)]
 pub struct LateInitSystem<T>(PhantomData<*const T>);
@@ -21,7 +23,10 @@ unsafe impl<T> Send for LateInitSystem<T> {}
 unsafe impl<T> Sync for LateInitSystem<T> {}
 
 #[derive(SystemData)]
-pub struct Data<'a, T> where T: Component + LateInit<'a> {
+pub struct Data<'a, T>
+where
+    T: Component + LateInit<'a>,
+{
     entities: Entities<'a>,
     markers: WriteStorage<'a, WaitingLateInit<T>>,
     components: WriteStorage<'a, T>,
@@ -29,14 +34,19 @@ pub struct Data<'a, T> where T: Component + LateInit<'a> {
     init_data: T::SystemData,
 }
 
-impl<'a, T> System<'a> for LateInitSystem<T> where T: Component + LateInit<'a> {
+impl<'a, T> System<'a> for LateInitSystem<T>
+where
+    T: Component + LateInit<'a>,
+{
     type SystemData = Data<'a, T>;
 
     fn run(&mut self, mut data: Self::SystemData) {
         for (entity, _) in (&*data.entities, &data.markers).join() {
             debug!("Late init for {:?}", entity);
             let component = T::init(entity, &data.init_data);
-            data.components.insert(entity, component).expect("Failed to insert late init component");
+            data.components
+                .insert(entity, component)
+                .expect("Failed to insert late init component");
         }
 
         data.markers.clear();

@@ -1,5 +1,6 @@
 use amethyst::{core::Transform, ecs::prelude::*};
 use core::player::Player;
+use shred_derive::*;
 
 #[derive(Debug, Default)]
 pub struct PlayerYawSystem;

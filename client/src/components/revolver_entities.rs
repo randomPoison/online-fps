@@ -1,5 +1,6 @@
-use ::components::find_named_child;
-use ::waiting_late_init::*;
+use crate::components::find_named_child;
+use crate::waiting_late_init::*;
+use serde::*;
 use amethyst::core::*;
 use amethyst::ecs::*;
 use amethyst_editor_sync::*;
@@ -43,15 +44,7 @@ impl<'a> LateInit<'a> for RevolverEntities {
         // Partially apply `find_named_child` since we're going to call it a bunch of times with
         // almost exactly the same parameters. This closure allows us to just specify the name
         // each time.
-        let find = |name| {
-            find_named_child(
-                entity,
-                name,
-                &entities,
-                &names,
-                &parents,
-            )
-        };
+        let find = |name| find_named_child(entity, name, &entities, &names, &parents);
 
         let cylinder_pivot = find("Cylinder Pivot")
             .expect("Unable to find \"Cylinder Pivot\" node for revolver")
@@ -90,7 +83,9 @@ impl<'a> LateInit<'a> for RevolverEntities {
             hammer,
             cylinder,
             body,
-            chambers: [chamber_0, chamber_1, chamber_2, chamber_3, chamber_4, chamber_5],
+            chambers: [
+                chamber_0, chamber_1, chamber_2, chamber_3, chamber_4, chamber_5,
+            ],
             cartridges: [None, None, None, None, None, None],
         }
     }

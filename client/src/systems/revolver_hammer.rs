@@ -1,9 +1,10 @@
+use crate::components::*;
 use amethyst::core::*;
 use amethyst::ecs::*;
-use components::*;
 use core::math::*;
 use core::player::*;
 use core::revolver::*;
+use shred_derive::*;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RevolverHammerSystem;

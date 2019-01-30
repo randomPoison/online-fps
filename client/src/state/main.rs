@@ -1,8 +1,10 @@
+use crate::components::*;
+use crate::{GltfCache, PlayerLookup, ReadConnection};
 use amethyst::{ecs::prelude::*, prelude::*};
-use components::*;
 use core::{player::Player, ServerMessageBody};
+use log::*;
+use shred_derive::*;
 use std::collections::HashSet;
-use {GltfCache, PlayerLookup, ReadConnection};
 
 #[derive(Debug)]
 pub struct MainState {
@@ -90,7 +92,7 @@ impl SimpleState for MainState {
                         let biped = data.gltf_cache.get("biped").expect("No biped model");
                         let revolver = data.gltf_cache.get("revolver").expect("No revolver model");
 
-                        ::build_player(
+                        crate::build_player(
                             &data.updater,
                             &data.entities,
                             &mut data.player_lookup,

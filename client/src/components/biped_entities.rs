@@ -1,8 +1,9 @@
-use ::components::find_named_child;
-use ::waiting_late_init::*;
+use crate::components::find_named_child;
+use crate::waiting_late_init::*;
 use amethyst::core::*;
 use amethyst::ecs::*;
 use amethyst_editor_sync::*;
+use serde::*;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct BipedEntities {
@@ -27,6 +28,9 @@ impl<'a> LateInit<'a> for BipedEntities {
         let head = find_named_child(entity, "Head", &data.0, &data.1, &data.2)
             .expect("Unable to find \"Head\" node for biped");
 
-        BipedEntities { body: body.into(), head: head.into() }
+        BipedEntities {
+            body: body.into(),
+            head: head.into(),
+        }
     }
 }

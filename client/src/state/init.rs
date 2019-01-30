@@ -1,9 +1,11 @@
+use crate::components::*;
+use crate::{state::MainState, GltfCache, PlayerLookup, ReadConnection};
 use amethyst::{assets::PrefabLoader, core::Transform, ecs::prelude::*, prelude::*, renderer::*};
 use amethyst_gltf::{GltfPrefab, GltfSceneFormat, GltfSceneOptions};
-use components::*;
 use core::math::*;
 use core::ServerMessageBody;
-use {state::MainState, GltfCache, PlayerLookup, ReadConnection};
+use log::*;
+use shred_derive::*;
 
 /// Game state that waits for the init message from the server.
 ///
@@ -122,7 +124,7 @@ impl SimpleState for InitState {
                         // Initialize the local state for each of the players.
                         for (_, player) in world.players {
                             let is_local = player.id == id;
-                            ::build_player(
+                            crate::build_player(
                                 &data.updater,
                                 &data.entities,
                                 &mut data.player_lookup,

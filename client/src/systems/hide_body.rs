@@ -1,8 +1,8 @@
-use ::components::*;
-use components::BipedEntities;
-use amethyst::renderer::MeshHandle;
+use crate::components::*;
 use amethyst::ecs::prelude::*;
 use amethyst::ecs::storage::StorageEntry;
+use amethyst::renderer::MeshHandle;
+use shred_derive::*;
 
 /// Disables the mesh for the local player's body so that the player can still see when they look
 /// down.

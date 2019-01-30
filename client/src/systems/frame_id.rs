@@ -1,5 +1,6 @@
-use ::FrameId;
+use crate::FrameId;
 use amethyst::ecs::prelude::*;
+use shred_derive::*;
 
 /// Increments the frame count.
 pub struct FrameIdSystem;
