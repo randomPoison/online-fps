@@ -6,6 +6,6 @@
     "./workers/server_worker.json"
   ],
   "clientWorkers": [
-    "./rust_client.json"
+    "./client/rust_client.json"
   ]
 }

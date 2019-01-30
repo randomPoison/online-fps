@@ -42,7 +42,7 @@ mod state;
 mod systems;
 mod waiting_late_init;
 
-fn main() -> amethyst::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     static SHUTDOWN_IO_THREAD: ::std::sync::atomic::AtomicBool =
         ::std::sync::atomic::AtomicBool::new(false);
 
@@ -121,6 +121,25 @@ fn main() -> amethyst::Result<()> {
 
     trace!("Adding transform bundle");
     let game_data = game_data.with_bundle(TransformBundle::new())?;
+
+    let locator_params =
+        LocatorParameters::new("beta_apart_uranus_40", unimplemented!("locator token"));
+    let locator = Locator::new("locator.improbable.io", &locator_params);
+    let deployment_list_future = locator.get_deployment_list_async();
+    let deployment_list = deployment_list_future.wait()?;
+
+    if deployment_list.is_empty() {
+        return Err("No deployments could be found!")?;
+    }
+
+    let deployment = deployment_list[0].deployment_name;
+    let params = ConnectionParameters::new("Client", ComponentDatabase::new())
+        .using_tcp()
+        .using_external_ip();
+    let connection_future =
+        WorkerConnection::connect_locator_async(&locator, &deployment, &params, |_| true);
+
+    let spatial_connection = connection_future.wait();
 
     // Create the event loop that will drive network communication.
     trace!("Spawning I/O thread");
