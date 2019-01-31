@@ -27,10 +27,11 @@ use log::*;
 use serde::*;
 use spatialos_sdk::worker::{
     component::ComponentDatabase,
-    connection::WorkerConnection,
-    locator::{Locator, LocatorParameters},
+    connection::{Connection, WorkerConnection},
+    locator::{Locator, LocatorCredentials, LocatorParameters},
     parameters::ConnectionParameters,
 };
+use std::sync::atomic::*;
 use std::thread;
 use std::time::Duration;
 use tap::*;
@@ -43,8 +44,7 @@ mod systems;
 mod waiting_late_init;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    static SHUTDOWN_IO_THREAD: ::std::sync::atomic::AtomicBool =
-        ::std::sync::atomic::AtomicBool::new(false);
+    static SHUTDOWN_IO_THREAD: AtomicBool = AtomicBool::new(false);
 
     // Initialize logging first so that we can start capturing logs immediately.
     log4rs::init_file(
@@ -122,69 +122,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     trace!("Adding transform bundle");
     let game_data = game_data.with_bundle(TransformBundle::new())?;
 
-    let locator_params =
-        LocatorParameters::new("beta_apart_uranus_40", unimplemented!("locator token"));
-    let locator = Locator::new("locator.improbable.io", &locator_params);
-    let deployment_list_future = locator.get_deployment_list_async();
-    let deployment_list = deployment_list_future.wait()?;
+    // Create a thread dedicated to handling networking for the SpatialOS connection.
+    let io_thread = thread::spawn(|| {
+        // TODO: Add a way to toggle between using the receptionist (for connecting to
+        // local deployments) and the locator (for connecting to cloud deployments).
+        let spatial_future = if true {
+            let params =
+                ConnectionParameters::new("ServerWorker", ComponentDatabase::new()).using_tcp();
 
-    if deployment_list.is_empty() {
-        return Err("No deployments could be found!")?;
-    }
+            // TODO: Add a way to configure the worker ID, hostname, and port for the connection.
+            WorkerConnection::connect_receptionist_async(
+                "TODO: Come up with a real client worker ID",
+                "127.0.0.1",
+                7777,
+                &params,
+            )
+        } else {
+            let locator_params = LocatorParameters::new(
+                "beta_apart_uranus_40",
+                LocatorCredentials::LoginToken("TODO: Get a real login token".into()),
+            );
+            let locator = Locator::new("locator.improbable.io", &locator_params);
+            let deployment_list_future = locator.get_deployment_list_async();
+            let deployment_list = deployment_list_future
+                .wait()
+                .expect("Failed ot get deployment lists");
 
-    let deployment = deployment_list[0].deployment_name;
-    let params = ConnectionParameters::new("Client", ComponentDatabase::new())
-        .using_tcp()
-        .using_external_ip();
-    let connection_future =
-        WorkerConnection::connect_locator_async(&locator, &deployment, &params, |_| true);
+            if deployment_list.is_empty() {
+                panic!("No deployments found ;__;");
+            }
 
-    let spatial_connection = connection_future.wait();
+            let deployment = &deployment_list[0].deployment_name;
+            let params = ConnectionParameters::new("Client", ComponentDatabase::new())
+                .using_tcp()
+                .using_external_ip();
+            WorkerConnection::connect_locator_async(&locator, deployment, &params, |_| true)
+        };
 
-    // Create the event loop that will drive network communication.
-    trace!("Spawning I/O thread");
-    let (sender, connection_receiver) = oneshot::channel();
-    let io_thread = thread::spawn(move || {
-        // Create the event loop that will drive network communication.
-        let mut core = Core::new().expect("Failed to create reactor");
-        let handle = core.handle();
+        let mut connection = spatial_future
+            .wait()
+            .expect("Failed to connect to deployment");
 
-        // Spawn the connection listener onto the reactor and create a new `Stream` that yields each
-        // connection as it is received.
-        let address = "127.0.0.1:1234".parse().unwrap();
-        let wait_for_connection = ::sumi::Connection::connect(address, &core.handle())
-            .expect("Failed to bind socket")
-            .map(move |connection| {
-                ::core::Connection::<ClientMessage, ServerMessage>::new(connection, &handle)
-            })
-            .and_then(move |connection| {
-                sender.send(connection).expect("Failed to send connection");
-                Ok(())
-            })
-            .map_err(|error| {
-                panic!(
-                    "Error establishing connection: {:?} {:?}",
-                    error.kind(),
-                    error
-                );
-            });
-        core.handle().spawn(wait_for_connection);
-
-        // Run the main loop forever.
-        while !SHUTDOWN_IO_THREAD.load(::std::sync::atomic::Ordering::SeqCst) {
-            core.turn(None);
+        while !SHUTDOWN_IO_THREAD.load(Ordering::SeqCst) {
+            let op_list = connection.get_op_list(0);
+            for op in &op_list {
+                dbg!(op);
+            }
         }
     });
 
-    trace!("Waiting on connection to arrive from I/O tread...");
-    let connection = connection_receiver
-        .wait()
-        .expect("Error occurred while establishing connection with server");
-    trace!("Established connection");
-
     trace!("Building the application");
     let mut application = Application::build("../assets", InitState)?
-        .with_resource(connection)
+        // .with_resource(connection)
         .with_frame_limit(
             FrameRateLimitStrategy::SleepAndYield(Duration::from_millis(2)),
             144,
