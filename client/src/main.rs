@@ -132,7 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // TODO: Add a way to configure the worker ID, hostname, and port for the connection.
             WorkerConnection::connect_receptionist_async(
-                "TODO: Come up with a real client worker ID",
+                &format!("Client-{}", uuid::Uuid::new_v4()),
                 "127.0.0.1",
                 7777,
                 &params,

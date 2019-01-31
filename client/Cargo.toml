@@ -23,3 +23,4 @@ spatialos-sdk = { git = "https://github.com/jamiebrynes7/spatialos-sdk-rs", rev 
 sumi = { path = "../sumi" }
 tap = "0.3"
 tokio-core = "0.1"
+uuid = { version = "0.7.1", features = ["v4"] }
