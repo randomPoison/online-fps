@@ -21,7 +21,6 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{thread, time::Duration};
 use structopt::StructOpt;
-use sumi::ConnectionListener;
 use tap::*;
 use tokio_core::reactor::Core;
 use workers::generated::improbable;
@@ -135,7 +134,6 @@ fn main() -> ::amethyst::Result<()> {
 type Broadcasts = Vec<ServerMessageBody>;
 
 struct Server {
-    new_connections: Receiver<Connection<ServerMessage, ClientMessage>>,
     frame_count: usize,
 }
 
@@ -143,6 +141,7 @@ impl SimpleState for Server {
     fn update(&mut self, data: &mut StateData<GameData>) -> SimpleTrans {
         self.frame_count += 1;
 
+        /*
         // Handle any new connections, adding a new player for the new client.
         assert!(
             !self.new_connections.is_disconnected(),
@@ -218,6 +217,7 @@ impl SimpleState for Server {
             // Add the client to the list of connected clients.
             data.world.create_entity().with(client).build();
         }
+        */
 
         // Allow all systems to run.
         data.data.update(&data.world);
@@ -246,11 +246,11 @@ impl SimpleState for Server {
         for client in (&mut clients).join() {
             for broadcast in &*broadcasts {
                 trace!("Broadcasting {:?} to client {:#x}", broadcast, client.id);
-                client.connection.send(ServerMessage {
-                    server_frame: self.frame_count,
-                    client_frame: client.latest_frame,
-                    body: broadcast.clone(),
-                });
+                // client.connection.send(ServerMessage {
+                //     server_frame: self.frame_count,
+                //     client_frame: client.latest_frame,
+                //     body: broadcast.clone(),
+                // });
             }
         }
 
@@ -277,8 +277,7 @@ struct Opt {
 /// Represents a connected client and its associated state.
 #[derive(Debug)]
 struct Client {
-    connection: Connection<ServerMessage, ClientMessage>,
-
+    // connection: Connection<ServerMessage, ClientMessage>,
     id: u64,
     input: InputFrame,
 
@@ -314,6 +313,7 @@ impl<'a> System<'a> for PlayerSystem {
         // player based on the current input state, and then send the player's current state back
         // to the client.
         for (entity, client) in (&*entities, &mut clients).join() {
+            /*
             if !client.connection.is_connected() {
                 info!("Disconnected from client {:#x}", client.id);
 
@@ -353,6 +353,7 @@ impl<'a> System<'a> for PlayerSystem {
                     }
                 }
             }
+            */
 
             // Tick the player.
             let player = &mut client.player;
