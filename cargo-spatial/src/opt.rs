@@ -29,15 +29,22 @@ pub struct Opt {
 #[derive(StructOpt)]
 #[structopt(rename_all = "kebab-case")]
 pub enum Command {
-    /// Commands for developing and running a local SpatialOS project.
+    /// Commands for developing and running a local SpatialOS project
     #[structopt(name = "local")]
     Local(Local),
+
+    /// Various utilities for generating values used in SpatialOS development
+    #[structopt(name = "generate")]
+    Generate {
+        #[structopt(subcommand)]
+        command: Generate,
+    },
 }
 
 #[derive(StructOpt)]
 #[structopt(rename_all = "kebab-case")]
 pub enum Local {
-    /// Start a SpatialOS simulation locally. Automatically builds workers.
+    /// Start a SpatialOS simulation locally. Automatically builds workers
     #[structopt(name = "launch")]
     Launch(LocalLaunch),
 }
@@ -45,10 +52,17 @@ pub enum Local {
 #[derive(StructOpt)]
 #[structopt(rename_all = "kebab-case")]
 pub struct LocalLaunch {
-    /// Don't build workers before launching the local deployment.
+    /// Don't build workers before launching the local deployment
     #[structopt(long, short)]
     pub no_build: bool,
 
     #[structopt(long, short = "c")]
     pub launch_config: Option<PathBuf>,
+}
+#[derive(StructOpt)]
+#[structopt(rename_all = "kebab-case")]
+pub enum Generate {
+    /// Generate a random, valid entity ID
+    #[structopt(name = "entity-id")]
+    EntityId,
 }
