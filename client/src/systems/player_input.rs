@@ -19,7 +19,7 @@ pub struct Data<'s> {
 
     input: Read<'s, InputHandler<String, String>>,
     events: Read<'s, EventChannel<InputEvent<String>>>,
-    connection: WriteConnection<'s>,
+    // connection: WriteConnection<'s>,
     frame_id: Read<'s, FrameId>,
 }
 
@@ -56,44 +56,44 @@ impl<'s> System<'s> for PlayerInputSystem {
                 InputEvent::ActionPressed(action) => match action.as_ref() {
                     "toggle-cylinder" => {
                         trace!("Toggling cylinder");
-                        data.connection.send(ClientMessage {
-                            frame: data.frame_id.0,
-                            body: ClientMessageBody::RevolverAction(RevolverAction::ToggleCylinder),
-                        });
+                        // data.connection.send(ClientMessage {
+                        //     frame: data.frame_id.0,
+                        //     body: ClientMessageBody::RevolverAction(RevolverAction::ToggleCylinder),
+                        // });
                     }
 
                     "eject-cartridges" => {
                         trace!("Ejecting cartridges");
-                        data.connection.send(ClientMessage {
-                            frame: data.frame_id.0,
-                            body: ClientMessageBody::RevolverAction(
-                                RevolverAction::EjectCartridges,
-                            ),
-                        });
+                        // data.connection.send(ClientMessage {
+                        //     frame: data.frame_id.0,
+                        //     body: ClientMessageBody::RevolverAction(
+                        //         RevolverAction::EjectCartridges,
+                        //     ),
+                        // });
                     }
 
                     "load-cartridge" => {
                         trace!("Loading cartridge");
-                        data.connection.send(ClientMessage {
-                            frame: data.frame_id.0,
-                            body: ClientMessageBody::RevolverAction(RevolverAction::LoadCartridge),
-                        });
+                        // data.connection.send(ClientMessage {
+                        //     frame: data.frame_id.0,
+                        //     body: ClientMessageBody::RevolverAction(RevolverAction::LoadCartridge),
+                        // });
                     }
 
                     "pull-trigger" => {
                         trace!("Pulling trigger");
-                        data.connection.send(ClientMessage {
-                            frame: data.frame_id.0,
-                            body: ClientMessageBody::RevolverAction(RevolverAction::PullTrigger),
-                        });
+                        // data.connection.send(ClientMessage {
+                        //     frame: data.frame_id.0,
+                        //     body: ClientMessageBody::RevolverAction(RevolverAction::PullTrigger),
+                        // });
                     }
 
                     "pull-hammer" => {
                         trace!("Pulling hammer");
-                        data.connection.send(ClientMessage {
-                            frame: data.frame_id.0,
-                            body: ClientMessageBody::RevolverAction(RevolverAction::PullHammer),
-                        });
+                        // data.connection.send(ClientMessage {
+                        //     frame: data.frame_id.0,
+                        //     body: ClientMessageBody::RevolverAction(RevolverAction::PullHammer),
+                        // });
                     }
 
                     _ => warn!("Unexpected action: {}", action),
@@ -108,11 +108,11 @@ impl<'s> System<'s> for PlayerInputSystem {
             *input_frame = input.clone();
         }
 
-        // Send the input for this frame to the server.
-        data.connection.send(ClientMessage {
-            frame: data.frame_id.0,
-            body: ClientMessageBody::Input(input),
-        });
+        // // Send the input for this frame to the server.
+        // data.connection.send(ClientMessage {
+        //     frame: data.frame_id.0,
+        //     body: ClientMessageBody::Input(input),
+        // });
     }
 
     fn setup(&mut self, resources: &mut Resources) {

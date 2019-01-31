@@ -98,55 +98,54 @@ impl SimpleState for InitState {
         world.add_resource(AmbientColor(Rgba(0.2, 0.2, 0.2, 0.2)));
     }
 
-    fn update(&mut self, data: &mut StateData<GameData>) -> SimpleTrans {
+    fn update(&mut self, _data: &mut StateData<GameData>) -> SimpleTrans {
         trace!("InitState::update()");
 
-        #[derive(SystemData)]
-        struct Data<'a> {
-            connection: ReadConnection<'a>,
-            entities: Entities<'a>,
-            updater: Read<'a, LazyUpdate>,
-            gltf_cache: Read<'a, GltfCache>,
-            player_lookup: Write<'a, PlayerLookup>,
-        }
+        // #[derive(SystemData)]
+        // struct Data<'a> {
+        //     // connection: ReadConnection<'a>,
+        //     entities: Entities<'a>,
+        //     updater: Read<'a, LazyUpdate>,
+        //     gltf_cache: Read<'a, GltfCache>,
+        //     player_lookup: Write<'a, PlayerLookup>,
+        // }
 
-        // Listen for the `Init` message. Once we receive it, we can initialize the local state
-        // and then switch to the main game state.
-        let trans = data.world.exec(|mut data: Data| {
-            for message in data.connection.try_iter() {
-                match message.body {
-                    ServerMessageBody::Init { id, world } => {
-                        trace!("Received init message, id {:#x}", id);
+        //// Listen for the `Init` message. Once we receive it, we can initialize the local state
+        //// and then switch to the main game state.
+        // data.world.exec(|mut data: Data| {
+        //     for message in data.connection.try_iter() {
+        //         match message.body {
+        //             ServerMessageBody::Init { id, world } => {
+        //                 trace!("Received init message, id {:#x}", id);
 
-                        let biped = data.gltf_cache.get("biped").expect("No biped model");
-                        let revolver = data.gltf_cache.get("revolver").expect("No revolver model");
+        //                 let biped = data.gltf_cache.get("biped").expect("No biped model");
+        //                 let revolver = data.gltf_cache.get("revolver").expect("No revolver model");
 
-                        // Initialize the local state for each of the players.
-                        for (_, player) in world.players {
-                            let is_local = player.id == id;
-                            crate::build_player(
-                                &data.updater,
-                                &data.entities,
-                                &mut data.player_lookup,
-                                player,
-                                is_local,
-                                biped,
-                                revolver,
-                            );
-                        }
+        //                 // Initialize the local state for each of the players.
+        //                 for (_, player) in world.players {
+        //                     let is_local = player.id == id;
+        //                     crate::build_player(
+        //                         &data.updater,
+        //                         &data.entities,
+        //                         &mut data.player_lookup,
+        //                         player,
+        //                         is_local,
+        //                         biped,
+        //                         revolver,
+        //                     );
+        //                 }
 
-                        // Once we've initialized the local state, switch to the main game state
-                        // which handles the core logic for the game.
-                        return Trans::Switch(Box::new(MainState { id, frame: 0 }));
-                    }
+        //                 // Once we've initialized the local state, switch to the main game state
+        //                 // which handles the core logic for the game.
+        //                 return Trans::Switch(Box::new(MainState { id, frame: 0 }));
+        //             }
 
-                    _ => trace!("Discarding while waiting for `Init`: {:?}", message),
-                }
-            }
+        //             _ => trace!("Discarding while waiting for `Init`: {:?}", message),
+        //         }
+        //     }
 
-            Trans::None
-        });
-
-        trans
+        //     Trans::None
+        // })
+        Trans::None
     }
 }
