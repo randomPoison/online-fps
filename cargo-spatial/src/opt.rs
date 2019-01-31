@@ -62,7 +62,7 @@ pub struct LocalLaunch {
 #[derive(StructOpt)]
 #[structopt(rename_all = "kebab-case")]
 pub enum Generate {
-    /// Generate a random, valid entity ID
-    #[structopt(name = "entity-id")]
-    EntityId,
+    /// Generate a random, valid component ID
+    #[structopt(name = "component-id")]
+    ComponentId,
 }

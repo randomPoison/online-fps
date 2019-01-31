@@ -12,26 +12,27 @@ fn main() {
         },
 
         Command::Generate { command } => match command {
-            Generate::EntityId => {
-                println!("Entity ID: {}", generate_entity_id());
+            Generate::ComponentId => {
+                println!("Component ID: {}", generate_component_id());
             }
         },
     }
 }
 
-/// Generates a random, valid Entity ID.
+/// Generates a random, valid component ID.
 ///
-/// Entity IDs are `i64` values that must be:
+/// Component IDs are `i32` values that must be:
 ///
 /// * Greater than 100.
-/// * Not in the range 190000 to 199999.
-fn generate_entity_id() -> i64 {
+/// * Less than 536,870,911.
+/// * Not in the range 190,000 to 199999.
+fn generate_component_id() -> i32 {
     use rand::Rng;
 
     let mut rng = rand::thread_rng();
     loop {
         let num = rng.gen();
-        if num > 100 && (num < 190_000 || num > 199_999) {
+        if num > 100 && (num < 190_000 || num > 199_999) && num < 536_870_911 {
             return num;
         }
     }
