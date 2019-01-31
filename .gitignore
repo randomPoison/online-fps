@@ -8,5 +8,5 @@
 logs/
 .improbable/
 schema/bin/
-workers/server/src/generated.rs
 build/
+workers/src/generated.rs
