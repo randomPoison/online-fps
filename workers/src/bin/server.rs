@@ -56,34 +56,6 @@ fn main() -> ::amethyst::Result<()> {
 
     connection.send_log_message(LogLevel::Info, "main", "Connected successfully!", None);
 
-    // Create a super cool entity on startup.
-    let mut entity = Entity::new();
-    entity.add(improbable::Position {
-        coords: improbable::Coordinates {
-            x: 10.0,
-            y: 12.0,
-            z: 0.0,
-        },
-    });
-    entity.add(improbable::EntityAcl {
-        read_acl: improbable::WorkerRequirementSet {
-            attribute_set: vec![improbable::WorkerAttributeSet {
-                attribute: vec!["server".into()],
-            }],
-        },
-        component_write_acl: BTreeMap::new().tap(|writes| {
-            writes.insert(
-                improbable::Position::ID,
-                improbable::WorkerRequirementSet {
-                    attribute_set: vec![improbable::WorkerAttributeSet {
-                        attribute: vec!["server".into()],
-                    }],
-                },
-            );
-        }),
-    });
-    let create_request_id = connection.send_create_entity_request(entity, None, None);
-
     // HACK: Make sure the game exits if we get a SIGINT. This should be handled by
     // Amethyst once we can switch back to using it.
     ctrlc::set_handler(move || {
@@ -98,11 +70,7 @@ fn main() -> ::amethyst::Result<()> {
             match op {
                 WorkerOp::CreateEntityResponse(response) => {
                     if let StatusCode::Success(entity_id) = response.status_code {
-                        if response.request_id == create_request_id {
-                            println!("Created entity {:?}", entity_id);
-                        } else {
-                            println!("Some random thing created entity: {:?}", entity_id)
-                        }
+                        println!("Some random thing created entity: {:?}", entity_id)
                     } else {
                         eprintln!("Error creating entity: {:?}", response.status_code);
                     }
