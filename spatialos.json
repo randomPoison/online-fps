@@ -3,7 +3,8 @@
   "projectName": "beta_apart_uranus_40",
   "schemaDescriptor": "./schema/bin/schema.descriptor",
   "serverWorkers": [
-    "./workers/server_worker.json"
+    "./workers/server.worker.json",
+    "./workers/player_creator.worker.json"
   ],
   "clientWorkers": [
     "./client/rust_client.json"

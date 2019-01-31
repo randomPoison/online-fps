@@ -11,6 +11,12 @@
           "cols": 3,
           "rows": 3
         }
+      },
+      {
+        "layer": "player_creation",
+        "entity_id_sharding": {
+          "numWorkers": 1
+        }
       }
     ]
   },

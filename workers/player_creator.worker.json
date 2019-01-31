@@ -1,0 +1,58 @@
+{
+  "workerType": "PlayerCreator",
+  "layer": "player_creation",
+  "entity_interest": {
+    "range_entity_interest": {
+      "radius": 2
+    }
+  },
+  "permissions": {
+    "all": {}
+  },
+  "componentDelivery": {
+    "default": "RELIABLE_ORDERED",
+    "checkout_all_initially": true
+  },
+  "launchConfiguration": {
+    "cloudDeployment": {
+      "linux": {
+        "localBuildDirectory": "../build/release/",
+        "command": "bin/player_creator",
+        "arguments": [
+          "${IMPROBABLE_RECEPTIONIST_HOST}",
+          "${IMPROBABLE_RECEPTIONIST_PORT}",
+          "${IMPROBABLE_WORKER_ID}"
+        ]
+      }
+    },
+    "localDeployment": {
+      "macos": {
+        "localBuildDirectory": "../build/debug/",
+        "command": "bin/player_creator",
+        "arguments": [
+          "${IMPROBABLE_RECEPTIONIST_HOST}",
+          "${IMPROBABLE_RECEPTIONIST_PORT}",
+          "${IMPROBABLE_WORKER_ID}"
+        ]
+      },
+      "linux": {
+        "localBuildDirectory": "../build/debug/",
+        "command": "bin/player_creator",
+        "arguments": [
+          "${IMPROBABLE_RECEPTIONIST_HOST}",
+          "${IMPROBABLE_RECEPTIONIST_PORT}",
+          "${IMPROBABLE_WORKER_ID}"
+        ]
+      },
+      "windows": {
+        "localBuildDirectory": "../build/debug/",
+        "command": "bin/player_creator.exe",
+        "arguments": [
+          "${IMPROBABLE_RECEPTIONIST_HOST}",
+          "${IMPROBABLE_RECEPTIONIST_PORT}",
+          "${IMPROBABLE_WORKER_ID}"
+        ]
+      }
+    }
+  }
+}
