@@ -1,0 +1,9 @@
+package beta_apart_uranus;
+
+component Player {
+    id = 265053046;
+}
+
+component PlayerCreator {
+    id = 421804388;
+}
