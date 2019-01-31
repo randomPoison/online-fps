@@ -13,7 +13,6 @@ futures-cpupool = "0.1"
 log = "0.4"
 log4rs = { version = "0.8", features = ["toml_format"] }
 rand = "0.4.1"
-sumi = { path = "../sumi" }
 tokio-core = "0.1.17"
 spatialos-sdk = { git = "https://github.com/jamiebrynes7/spatialos-sdk-rs", rev = "0dbe81d" }
 structopt = "0.2.14"

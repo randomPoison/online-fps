@@ -9,22 +9,15 @@ extern crate log;
 extern crate rand;
 #[macro_use]
 extern crate serde;
-extern crate sumi;
 extern crate tokio_core;
 
 use amethyst::ecs::prelude::*;
 use futures::{
-    {Async, Future, Sink, Stream},
     executor::{Notify, Spawn},
+    {Async, Future, Sink, Stream},
 };
-use serde::{Serialize, de::DeserializeOwned};
-use std::{
-    collections::HashMap,
-    fmt::Debug,
-    str,
-    sync::Arc,
-    time::Duration,
-};
+use serde::{de::DeserializeOwned, Serialize};
+use std::{collections::HashMap, fmt::Debug, str, sync::Arc, time::Duration};
 use tokio_core::reactor;
 
 use math::*;
@@ -34,80 +27,6 @@ use revolver::*;
 pub mod math;
 pub mod player;
 pub mod revolver;
-
-#[derive(Debug)]
-pub struct Connection<Out, In> {
-    sender: ::futures::sync::mpsc::Sender<Out>,
-    receiver: ::crossbeam_channel::Receiver<In>,
-}
-
-impl<Out, In> Connection<Out, In>
-where
-    Out: Serialize + Debug + 'static,
-    In: DeserializeOwned + Debug + 'static
-{
-    pub fn new(connection: ::sumi::Connection, handle: &reactor::Handle) -> Connection<Out, In> {
-        let serialized = connection.serialized::<Out, In>();
-        let (outgoing, incoming) = serialized.split();
-
-        let receiver = {
-            let (sender, receiver) = crossbeam_channel::bounded(8);
-
-            // Create a future that pumps each of the incoming messages and sends them
-            // to the main thread via a channel, then spawn that future onto the reactor.
-            let incoming = incoming
-                .for_each(move |incoming| {
-                    trace!("Incoming message: {:?}", incoming);
-
-                    match sender.try_send(incoming) {
-                        Ok(()) => {},
-                        Err(_) => warn!("Failed to send message to main thread, incoming buffer is full"),
-                    }
-
-                    Ok(())
-                })
-                .map_err(|err| panic!("Unexpected error in incoming message stream: {:?}", err));
-            handle.spawn(incoming);
-
-            receiver
-        };
-
-        // Spawn the outgoing message sink onto the reactor, creating a channel that can
-        // be used to send outgoing messages from other threads/reactors.
-        let sender = {
-            let (sender, receiver) = ::futures::sync::mpsc::channel(8);
-            let sink = outgoing
-                .sink_map_err(|error| {
-                    panic!("Sink error: {:?}", error);
-                })
-                .send_all(receiver)
-                .map(|_| {});
-            handle.spawn(sink);
-
-            sender
-        };
-
-        Connection { sender, receiver }
-    }
-
-    pub fn send(&mut self, message: Out) {
-        trace!("Sending message: {:?}", message);
-        self.sender.try_send(message).expect("Failed to send outgoing message");
-    }
-
-    pub fn try_iter<'a>(&'a self) -> impl Iterator<Item = In> + 'a {
-        self
-            .receiver
-            .try_iter()
-    }
-
-    pub fn is_connected(&self) -> bool {
-        !self.receiver.is_disconnected()
-    }
-}
-
-pub type ClientConnection = Connection<ClientMessage, ServerMessage>;
-pub type ServerConnection = Connection<ServerMessage, ClientMessage>;
 
 /// Extra functionality for [`std::time::Duration`].
 ///
@@ -180,7 +99,10 @@ impl<'a, S: 'a + Stream> PollReady<'a, S> {
     }
 }
 
-impl<'a, S: 'a> Iterator for PollReady<'a, S> where S: Stream {
+impl<'a, S: 'a> Iterator for PollReady<'a, S>
+where
+    S: Stream,
+{
     type Item = Result<S::Item, S::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -249,9 +171,7 @@ pub enum ServerMessageBody {
     },
 
     /// A player left the game, and should be removed from the scene.
-    PlayerLeft {
-        id: u64,
-    },
+    PlayerLeft { id: u64 },
 }
 
 /// A message sent from the client to the server.

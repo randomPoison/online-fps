@@ -1,5 +1,5 @@
 use crate::components::*;
-use crate::{FrameId, WriteConnection};
+use crate::FrameId;
 use amethyst::{ecs::*, input::InputEvent, input::InputHandler, shrev::EventChannel};
 use core::math::*;
 use core::revolver::*;

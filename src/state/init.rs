@@ -1,5 +1,5 @@
 use crate::components::*;
-use crate::{state::MainState, GltfCache, PlayerLookup, ReadConnection};
+use crate::{state::MainState, GltfCache, PlayerLookup};
 use amethyst::{assets::PrefabLoader, core::Transform, ecs::prelude::*, prelude::*, renderer::*};
 use amethyst_gltf::{GltfPrefab, GltfSceneFormat, GltfSceneOptions};
 use core::math::*;

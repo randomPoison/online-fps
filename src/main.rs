@@ -191,9 +191,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-type ReadConnection<'a> = ReadExpect<'a, ClientConnection>;
-type WriteConnection<'a> = WriteExpect<'a, ClientConnection>;
-
 type AssetCache<T> = ::std::collections::HashMap<String, Handle<T>>;
 type GltfCache = AssetCache<GltfSceneAsset>;
 

@@ -11,5 +11,4 @@ futures = "0.1"
 log = "0.4"
 rand = "0.3"
 serde = { version = "1.0", features = ["derive"] }
-sumi = { path = "../sumi" }
 tokio-core = "0.1.17"

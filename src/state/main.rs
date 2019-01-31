@@ -1,5 +1,5 @@
 use crate::components::*;
-use crate::{GltfCache, PlayerLookup, ReadConnection};
+use crate::{GltfCache, PlayerLookup};
 use amethyst::{ecs::prelude::*, prelude::*};
 use core::{player::Player, ServerMessageBody};
 use log::*;
@@ -18,7 +18,7 @@ impl SimpleState for MainState {
 
         #[derive(SystemData)]
         struct Data<'a> {
-            connection: ReadConnection<'a>,
+            // connection: ReadConnection<'a>,
             players: WriteStorage<'a, Player>,
             player_entities: ReadStorage<'a, PlayerEntities>,
             pitches: WriteStorage<'a, PlayerPitch>,
@@ -31,14 +31,15 @@ impl SimpleState for MainState {
         // Process incoming server messages for the frame, updating the local world state with
         // the data from the server.
         data.world.exec(|mut data: Data| {
-            // HACK: Keep track of players that get added this frame. If we receive an update
-            // on the same frame that we add a player, then the components for the player won't
-            // yet be ready and we'll end up getting errors when we try to update them.
-            //
-            // To fix this we'll need to figure out a better way to handle updating local
-            // components from incoming server messages.
-            let mut new_players = HashSet::new();
+            // // HACK: Keep track of players that get added this frame. If we receive an update
+            // // on the same frame that we add a player, then the components for the player won't
+            // // yet be ready and we'll end up getting errors when we try to update them.
+            // //
+            // // To fix this we'll need to figure out a better way to handle updating local
+            // // components from incoming server messages.
+            // let mut new_players = HashSet::new();
 
+            /*
             for message in data.connection.try_iter() {
                 match message.body {
                     ServerMessageBody::WorldUpdate(server_world) => {
@@ -127,6 +128,7 @@ impl SimpleState for MainState {
                     }
                 }
             }
+            */
         });
 
         Trans::None
