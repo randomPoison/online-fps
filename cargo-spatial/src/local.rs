@@ -13,16 +13,17 @@ pub fn launch(_opt: &Opt, _local: &Local, launch: &LocalLaunch) {
     // Run codegen and such.
     // TODO: Use the spatialos-sdk-tools crate directly rather than invoking the CLI.
     // TODO: Make the various flags configurable.
-    let status = dbg!(process::Command::new("setup").args(&[
-        "-s",
-        "schema",
-        "-c",
-        "workers/src/generated.rs",
-        "-o",
-        "schema/bin",
-    ]))
-    .status()
-    .expect("Failed to run setup script");
+    let status = process::Command::new("setup")
+        .args(&[
+            "-s",
+            "schema",
+            "-c",
+            "workers/src/generated.rs",
+            "-o",
+            "schema/bin",
+        ])
+        .status()
+        .expect("Failed to run setup script");
 
     if !status.success() {
         return;
