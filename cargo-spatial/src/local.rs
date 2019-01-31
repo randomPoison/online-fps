@@ -36,8 +36,6 @@ pub fn launch(_opt: &Opt, _local: &Local, launch: &LocalLaunch) {
             // TODO: These values need to be configurable.
             .arg("--path")
             .arg("./workers")
-            .arg("--bin")
-            .arg("server")
             .status()
             .expect("Failed to build worker bin");
 
