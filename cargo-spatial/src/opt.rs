@@ -29,6 +29,10 @@ pub struct Opt {
 #[derive(StructOpt)]
 #[structopt(rename_all = "kebab-case")]
 pub enum Command {
+    /// Perform code generation from schema files in the project
+    #[structopt(name = "codegen")]
+    Codegen,
+
     /// Commands for developing and running a local SpatialOS project
     #[structopt(name = "local")]
     Local(Local),

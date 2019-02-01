@@ -6,4 +6,12 @@ component Player {
 
 component PlayerCreator {
     id = 421804388;
+
+    command SpawnPlayerResponse spawn_player(SpawnPlayerRequest);
+}
+
+type SpawnPlayerRequest {}
+
+type SpawnPlayerResponse {
+    uint32 player_id = 1;
 }
