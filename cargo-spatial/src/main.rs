@@ -1,4 +1,5 @@
 use crate::opt::*;
+use serde::*;
 use structopt::StructOpt;
 
 mod local;
@@ -36,4 +37,28 @@ fn generate_component_id() -> i32 {
             return num;
         }
     }
+}
+
+/// Project configuration stored in the `Cargo.toml` file at project's root.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Config {
+    /// The list of worker projects to be built.
+    ///
+    /// If empty, the root project is assumed to contain all workers.
+    workers: Vec<String>,
+
+    /// The file to use as output for code generation.
+    ///
+    /// Defaults to `src/generated.rs`.
+    codegen_out: Option<String>,
+
+    /// The directory containing schema files for the project.
+    ///
+    /// Defaults to `./schema`.
+    schema_dir: Option<String>,
+
+    /// The directory where built workers are put.
+    ///
+    /// Defaults to `./build`.
+    build_dir: Option<String>,
 }
