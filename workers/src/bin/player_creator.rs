@@ -1,14 +1,20 @@
 use futures::Future;
 use spatialos_sdk::worker::{
-    component::ComponentDatabase,
+    component::{Component, ComponentDatabase},
     connection::Connection,
     connection::WorkerConnection,
-    op::{StatusCode, WorkerOp},
+    entity::Entity,
+    op::{CommandRequestOp, WorkerOp},
     parameters::ConnectionParameters,
 };
+use std::collections::BTreeMap;
 use std::sync::atomic::*;
 use structopt::StructOpt;
-use workers::generated::improbable;
+use tap::*;
+use workers::generated::{
+    beta_apart_uranus::{PlayerCreator, PlayerCreatorCommandRequest, PlayerInput},
+    improbable,
+};
 
 fn main() {
     static RUNNING: AtomicBool = AtomicBool::new(true);
@@ -17,6 +23,8 @@ fn main() {
 
     // Connect to the SpatialOS load balancer asynchronously.
     let components = ComponentDatabase::new()
+        .add_component::<PlayerCreator>()
+        .add_component::<PlayerInput>()
         .add_component::<improbable::Position>()
         .add_component::<improbable::EntityAcl>()
         .add_component::<improbable::Interest>()
@@ -48,11 +56,12 @@ fn main() {
         for op in &connection.get_op_list(0) {
             println!("{:#?}", op);
             match op {
-                WorkerOp::CreateEntityResponse(response) => {
-                    if let StatusCode::Success(entity_id) = response.status_code {
-                        println!("Some random thing created entity: {:?}", entity_id)
-                    } else {
-                        eprintln!("Error creating entity: {:?}", response.status_code);
+                WorkerOp::CommandRequest(request_op) => {
+                    if request_op.component_id == PlayerCreator::ID {
+                        println!("Recieved spawn player request: {:?}", request_op.request_id);
+
+                        let request = request_op.get::<PlayerCreator>().unwrap();
+                        handle_spawn_player(&mut connection, request_op, request);
                     }
                 }
 
@@ -78,4 +87,58 @@ struct Opt {
 
     /// Worker ID for the current worker instance.
     worker_id: String,
+}
+
+fn handle_spawn_player(
+    connection: &mut WorkerConnection,
+    op: &CommandRequestOp,
+    request: &PlayerCreatorCommandRequest,
+) {
+    match request {
+        PlayerCreatorCommandRequest::SpawnPlayer(_) => {
+            // Create an entity for the player.
+            let mut entity = Entity::new();
+            entity.add(improbable::Position {
+                coords: improbable::Coordinates {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 12.0,
+                },
+            });
+            entity.add(PlayerInput {});
+            entity.add(improbable::Metadata {
+                entity_type: "Player".into(),
+            });
+            entity.add(improbable::EntityAcl {
+                read_acl: improbable::WorkerRequirementSet {
+                    attribute_set: vec![improbable::WorkerAttributeSet {
+                        attribute: vec!["client".into(), "server".into()],
+                    }],
+                },
+                component_write_acl: BTreeMap::new().tap(|writes| {
+                    writes.insert(
+                        improbable::Position::ID,
+                        improbable::WorkerRequirementSet {
+                            attribute_set: vec![improbable::WorkerAttributeSet {
+                                attribute: vec!["server".into()],
+                            }],
+                        },
+                    );
+
+                    writes.insert(
+                        PlayerInput::ID,
+                        improbable::WorkerRequirementSet {
+                            attribute_set: vec![improbable::WorkerAttributeSet {
+                                attribute: vec![op.caller_worker_id.clone()],
+                            }],
+                        },
+                    );
+                }),
+            });
+            let create_request_id = connection.send_create_entity_request(entity, None, None);
+            println!("Create entity request ID: {:?}", create_request_id);
+
+            unimplemented!("TODO: Send command response");
+        }
+    }
 }

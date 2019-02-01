@@ -15,3 +15,7 @@ type SpawnPlayerRequest {}
 type SpawnPlayerResponse {
     uint32 player_id = 1;
 }
+
+component PlayerInput {
+    id = 448260741;
+}
