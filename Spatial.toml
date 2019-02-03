@@ -1,0 +1,2 @@
+workers = ["workers"]
+codegen_out = "workers/src/generated.rs"

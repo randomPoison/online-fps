@@ -1,38 +1,9 @@
-[package]
-name = "client"
-version = "0.1.0"
-authors = ["David LeGare <excaliburhissheath@gmail.com>"]
-edition = "2018"
-
 [workspace]
 members = [
-    "cargo-spatial/",
-    "workers/",
+    "client",
+    "core",
+    "workers",
 ]
-
-[features]
-no_console = []
-
-[dependencies]
-amethyst = "0.10.0"
-amethyst-editor-sync = "0.4.0"
-amethyst_gltf = "0.5"
-core = { path = "./core" }
-crossbeam-channel = "0.1.3"
-futures = "0.1"
-log = "0.4"
-log4rs = { version = "0.8", features = ["toml_format"] }
-serde = { version = "1.0.38", features = ["derive"] }
-shred = "0.7"
-shred-derive = "0.5"
-spatialos-sdk = "0.0.0"
-tap = "0.3"
-tokio-core = "0.1"
-uuid = { version = "0.7.1", features = ["v4"] }
 
 [patch.crates-io]
 spatialos-sdk = { git = "https://github.com/jamiebrynes7/spatialos-sdk-rs", rev = "4472408" }
-
-[package.metadata.spatialos]
-workers = ["workers/"]
-codegen_out = "workers/src/generated.rs"
