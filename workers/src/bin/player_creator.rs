@@ -11,10 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::*;
 use structopt::StructOpt;
 use tap::*;
-use workers::generated::{
-    beta_apart_uranus::{PlayerCreator, PlayerCreatorCommandRequest, PlayerInput},
-    improbable,
-};
+use workers::generated::{beta_apart_uranus::*, improbable};
 
 fn main() {
     static RUNNING: AtomicBool = AtomicBool::new(true);
@@ -61,7 +58,7 @@ fn main() {
                         println!("Recieved spawn player request: {:?}", request_op.request_id);
 
                         let request = request_op.get::<PlayerCreator>().unwrap();
-                        handle_spawn_player(&mut connection, request_op, request);
+                        handle_spawn_player(&mut connection, &request_op, request);
                     }
                 }
 
@@ -138,7 +135,10 @@ fn handle_spawn_player(
             let create_request_id = connection.send_create_entity_request(entity, None, None);
             println!("Create entity request ID: {:?}", create_request_id);
 
-            unimplemented!("TODO: Send command response");
+            connection.send_command_response::<PlayerCreator>(
+                op.request_id,
+                PlayerCreatorCommandResponse::SpawnPlayer(SpawnPlayerResponse { player_id: 7 }),
+            )
         }
     }
 }

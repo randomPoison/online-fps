@@ -155,7 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let deployment = &deployment_list[0].deployment_name;
             let params = ConnectionParameters::new("Client", ComponentDatabase::new())
                 .using_tcp()
-                .using_external_ip();
+                .using_external_ip(true);
             WorkerConnection::connect_locator_async(&locator, deployment, &params, |_| true)
         };
 
