@@ -7,6 +7,6 @@
     "./workers/player_creator.worker.json"
   ],
   "clientWorkers": [
-    "./client.worker.json"
+    "./client/client.worker.json"
   ]
 }

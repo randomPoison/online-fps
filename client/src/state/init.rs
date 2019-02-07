@@ -6,6 +6,9 @@ use core::math::*;
 use core::ServerMessageBody;
 use log::*;
 use shred_derive::*;
+use spatialos_sdk::worker::{connection::Connection, parameters::CommandParameters, EntityId};
+use std::sync::Mutex;
+use workers::generated::beta_apart_uranus::*;
 
 /// Game state that waits for the init message from the server.
 ///
@@ -24,6 +27,22 @@ impl SimpleState for InitState {
         world.add_resource(PlayerLookup::default());
         world.register::<PlayerEntities>();
         world.register::<PlayerPitch>();
+
+        // TODO: Asynchronously establish the connection without blocking the main thread.
+        let mut connection = crate::create_connection();
+
+        // TODO: Query the world in order to get the entity ID of the player creator.
+        let creator_entity = EntityId::new(1);
+
+        let spawn_request_id = connection.send_command_request::<PlayerCreator>(
+            creator_entity,
+            PlayerCreatorCommandRequest::SpawnPlayer(SpawnPlayerRequest {}),
+            None,
+            CommandParameters::default(),
+        );
+        dbg!(spawn_request_id);
+
+        world.add_resource(Mutex::new(connection));
 
         #[derive(SystemData)]
         struct Data<'a> {

@@ -1,11 +1,6 @@
 {
   "workerType": "PlayerCreator",
   "layer": "player_creation",
-  "entity_interest": {
-    "range_entity_interest": {
-      "radius": 2
-    }
-  },
   "permissions": {
     "all": {}
   },

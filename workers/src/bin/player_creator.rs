@@ -11,14 +11,17 @@ use std::collections::BTreeMap;
 use std::sync::atomic::*;
 use structopt::StructOpt;
 use tap::*;
-use workers::generated::{beta_apart_uranus::*, improbable};
+use workers::{
+    generated::{beta_apart_uranus::*, improbable},
+    layers,
+};
 
 fn main() {
     static RUNNING: AtomicBool = AtomicBool::new(true);
 
     let config = Opt::from_args();
 
-    // Connect to the SpatialOS load balancer asynchronously.
+    // TODO: Connect to the SpatialOS load balancer asynchronously.
     let components = ComponentDatabase::new()
         .add_component::<PlayerCreator>()
         .add_component::<PlayerInput>()
@@ -27,7 +30,7 @@ fn main() {
         .add_component::<improbable::Interest>()
         .add_component::<improbable::Metadata>()
         .add_component::<improbable::Persistence>();
-    let params = ConnectionParameters::new("ServerWorker", components).using_tcp();
+    let params = ConnectionParameters::new("PlayerCreator", components).using_tcp();
     let future = WorkerConnection::connect_receptionist_async(
         &config.worker_id,
         &config.host,
@@ -40,7 +43,51 @@ fn main() {
         .wait()
         .expect("Failed to establish connection to SpatialOS");
 
-    println!("{:#?}", connection.get_worker_id());
+    eprintln!(
+        "{:#?}: {:?}",
+        connection.get_worker_id(),
+        connection.get_worker_attributes()
+    );
+
+    // Create the player creator entity.
+    //
+    // TODO: Bake the entity into the initial snapshot.
+    let mut entity = Entity::new();
+    entity.add(improbable::Position {
+        coords: improbable::Coordinates {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+    });
+    entity.add(PlayerCreator {});
+    entity.add(improbable::EntityAcl {
+        read_acl: improbable::WorkerRequirementSet {
+            attribute_set: vec![
+                improbable::WorkerAttributeSet {
+                    attribute: vec![layers::CLIENT.into()],
+                },
+                improbable::WorkerAttributeSet {
+                    attribute: vec![layers::PLAYER_CREATION.into()],
+                },
+            ],
+        },
+        component_write_acl: BTreeMap::new().tap(|writes| {
+            writes.insert(
+                PlayerCreator::ID,
+                improbable::WorkerRequirementSet {
+                    attribute_set: vec![improbable::WorkerAttributeSet {
+                        attribute: vec![layers::PLAYER_CREATION.into()],
+                    }],
+                },
+            );
+        }),
+    });
+    entity.add(improbable::Metadata {
+        entity_type: "Player Creator".into(),
+    });
+    let create_request_id = connection.send_create_entity_request(entity, None, None);
+    println!("Create entity request ID: {:?}", create_request_id);
 
     // HACK: Make sure the game exits if we get a SIGINT. This should be handled by
     // Amethyst once we can switch back to using it.
@@ -51,23 +98,31 @@ fn main() {
 
     'main: while RUNNING.load(Ordering::SeqCst) {
         for op in &connection.get_op_list(0) {
-            println!("{:#?}", op);
             match op {
                 WorkerOp::CommandRequest(request_op) => {
                     if request_op.component_id == PlayerCreator::ID {
-                        println!("Recieved spawn player request: {:?}", request_op.request_id);
+                        dbg!(&request_op.request_id);
 
                         let request = request_op.get::<PlayerCreator>().unwrap();
                         handle_spawn_player(&mut connection, &request_op, request);
+                    } else {
+                        eprintln!(
+                            "Received command for unknown component: {:?}",
+                            request_op.component_id
+                        );
                     }
                 }
 
                 WorkerOp::Disconnect(disconnect_op) => {
-                    println!("{:#?}", &disconnect_op.reason);
+                    dbg!(&disconnect_op.reason);
                     break 'main;
                 }
 
-                _ => {}
+                WorkerOp::Metrics(..) => {}
+
+                _ => {
+                    dbg!(&op);
+                }
             }
         }
     }
@@ -108,16 +163,21 @@ fn handle_spawn_player(
             });
             entity.add(improbable::EntityAcl {
                 read_acl: improbable::WorkerRequirementSet {
-                    attribute_set: vec![improbable::WorkerAttributeSet {
-                        attribute: vec!["client".into(), "server".into()],
-                    }],
+                    attribute_set: vec![
+                        improbable::WorkerAttributeSet {
+                            attribute: vec![layers::CLIENT.into()],
+                        },
+                        improbable::WorkerAttributeSet {
+                            attribute: vec![layers::SERVER.into()],
+                        },
+                    ],
                 },
                 component_write_acl: BTreeMap::new().tap(|writes| {
                     writes.insert(
                         improbable::Position::ID,
                         improbable::WorkerRequirementSet {
                             attribute_set: vec![improbable::WorkerAttributeSet {
-                                attribute: vec!["server".into()],
+                                attribute: vec![layers::SERVER.into()],
                             }],
                         },
                     );
@@ -126,7 +186,7 @@ fn handle_spawn_player(
                         PlayerInput::ID,
                         improbable::WorkerRequirementSet {
                             attribute_set: vec![improbable::WorkerAttributeSet {
-                                attribute: vec![op.caller_worker_id.clone()],
+                                attribute: vec![format!("workerId:{}", op.caller_worker_id)],
                             }],
                         },
                     );

@@ -22,21 +22,19 @@ use components::*;
 use core::math::*;
 use core::player::*;
 use core::*;
-use futures::{prelude::*, sync::oneshot};
+use futures::prelude::*;
 use log::*;
 use serde::*;
 use spatialos_sdk::worker::{
     component::ComponentDatabase,
-    connection::{Connection, WorkerConnection},
+    connection::WorkerConnection,
     locator::{Locator, LocatorCredentials, LocatorParameters},
     parameters::ConnectionParameters,
 };
-use std::sync::atomic::*;
-use std::thread;
 use std::time::Duration;
 use tap::*;
-use tokio_core::reactor::Core;
 use waiting_late_init::*;
+use workers::HandleOpsSystem;
 
 mod components;
 mod state;
@@ -44,8 +42,6 @@ mod systems;
 mod waiting_late_init;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    static SHUTDOWN_IO_THREAD: AtomicBool = AtomicBool::new(false);
-
     // Initialize logging first so that we can start capturing logs immediately.
     log4rs::init_file(
         concat!(env!("CARGO_MANIFEST_DIR"), "/../log4rs.toml"),
@@ -106,6 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(RevolverHammerSystem::default(), "revolver_hammer", &[])
         .with(RevolverCylinderSystem::default(), "revolver_cylinder", &[])
         .with(EjectAnimationSystem::default(), "eject_animation", &[])
+        .with(HandleOpsSystem::default(), "handle_ops", &[])
         // End of frame logic. Thread-local systems that need to run after all other work for
         // the frame has been done.
         .with_thread_local(FrameIdSystem)
@@ -122,55 +119,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     trace!("Adding transform bundle");
     let game_data = game_data.with_bundle(TransformBundle::new())?;
 
-    // Create a thread dedicated to handling networking for the SpatialOS connection.
-    let io_thread = thread::spawn(|| {
-        // TODO: Add a way to toggle between using the receptionist (for connecting to
-        // local deployments) and the locator (for connecting to cloud deployments).
-        let spatial_future = if true {
-            let params =
-                ConnectionParameters::new("ServerWorker", ComponentDatabase::new()).using_tcp();
-
-            // TODO: Add a way to configure the worker ID, hostname, and port for the connection.
-            WorkerConnection::connect_receptionist_async(
-                &format!("Client-{}", uuid::Uuid::new_v4()),
-                "127.0.0.1",
-                7777,
-                &params,
-            )
-        } else {
-            let locator_params = LocatorParameters::new(
-                "beta_apart_uranus_40",
-                LocatorCredentials::LoginToken("TODO: Get a real login token".into()),
-            );
-            let locator = Locator::new("locator.improbable.io", &locator_params);
-            let deployment_list_future = locator.get_deployment_list_async();
-            let deployment_list = deployment_list_future
-                .wait()
-                .expect("Failed ot get deployment lists");
-
-            if deployment_list.is_empty() {
-                panic!("No deployments found ;__;");
-            }
-
-            let deployment = &deployment_list[0].deployment_name;
-            let params = ConnectionParameters::new("Client", ComponentDatabase::new())
-                .using_tcp()
-                .using_external_ip(true);
-            WorkerConnection::connect_locator_async(&locator, deployment, &params, |_| true)
-        };
-
-        let mut connection = spatial_future
-            .wait()
-            .expect("Failed to connect to deployment");
-
-        while !SHUTDOWN_IO_THREAD.load(Ordering::SeqCst) {
-            let op_list = connection.get_op_list(0);
-            for op in &op_list {
-                dbg!(op);
-            }
-        }
-    });
-
     trace!("Building the application");
     let mut application = Application::build("../assets", InitState)?
         // .with_resource(connection)
@@ -182,11 +130,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     trace!("Running the application");
     application.run();
-
-    // Attempt to cleanly shut down the IO thread.
-    // TODO: There's probably a better way to manage shutting down the IO thread.
-    SHUTDOWN_IO_THREAD.store(true, ::std::sync::atomic::Ordering::SeqCst);
-    io_thread.join().expect("IO thread exited with an error");
 
     Ok(())
 }
@@ -201,6 +144,58 @@ type PlayerLookup = ::std::collections::HashMap<u64, Entity>;
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
 )]
 pub struct FrameId(pub usize);
+
+// TODO: Asynchronously establish the connection without blocking the main thread.
+fn create_connection() -> WorkerConnection {
+    use workers::generated::{beta_apart_uranus::*, improbable};
+
+    let components = ComponentDatabase::new()
+        .add_component::<PlayerCreator>()
+        .add_component::<PlayerInput>()
+        .add_component::<improbable::Position>()
+        .add_component::<improbable::EntityAcl>()
+        .add_component::<improbable::Interest>()
+        .add_component::<improbable::Metadata>()
+        .add_component::<improbable::Persistence>();
+
+    // TODO: Add a way to toggle between using the receptionist (for connecting to
+    // local deployments) and the locator (for connecting to cloud deployments).
+    let spatial_future = if true {
+        let params = ConnectionParameters::new("Client", components).using_tcp();
+
+        // TODO: Add a way to configure the worker ID, hostname, and port for the connection.
+        WorkerConnection::connect_receptionist_async(
+            &format!("Client-{}", uuid::Uuid::new_v4()),
+            "127.0.0.1",
+            7777,
+            &params,
+        )
+    } else {
+        let locator_params = LocatorParameters::new(
+            "beta_apart_uranus_40",
+            LocatorCredentials::LoginToken("TODO: Get a real login token".into()),
+        );
+        let locator = Locator::new("locator.improbable.io", &locator_params);
+        let deployment_list_future = locator.get_deployment_list_async();
+        let deployment_list = deployment_list_future
+            .wait()
+            .expect("Failed ot get deployment lists");
+
+        if deployment_list.is_empty() {
+            panic!("No deployments found ;__;");
+        }
+
+        let deployment = &deployment_list[0].deployment_name;
+        let params = ConnectionParameters::new("Client", components)
+            .using_tcp()
+            .using_external_ip(true);
+        WorkerConnection::connect_locator_async(&locator, deployment, &params, |_| true)
+    };
+
+    spatial_future
+        .wait()
+        .expect("Failed to connect to deployment")
+}
 
 /// Builds the entity hierarchy for a player.
 ///
