@@ -40,7 +40,7 @@ impl SimpleState for InitState {
             None,
             CommandParameters::default(),
         );
-        dbg!(spawn_request_id);
+        debug!("Spawn request ID: {:?}", spawn_request_id);
 
         world.add_resource(Mutex::new(connection));
 
