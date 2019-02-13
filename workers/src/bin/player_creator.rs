@@ -49,46 +49,6 @@ fn main() {
         connection.get_worker_attributes()
     );
 
-    // Create the player creator entity.
-    //
-    // TODO: Bake the entity into the initial snapshot.
-    let mut entity = Entity::new();
-    entity.add(improbable::Position {
-        coords: improbable::Coordinates {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        },
-    });
-    entity.add(PlayerCreator {});
-    entity.add(improbable::EntityAcl {
-        read_acl: improbable::WorkerRequirementSet {
-            attribute_set: vec![
-                improbable::WorkerAttributeSet {
-                    attribute: vec![layers::CLIENT.into()],
-                },
-                improbable::WorkerAttributeSet {
-                    attribute: vec![layers::PLAYER_CREATION.into()],
-                },
-            ],
-        },
-        component_write_acl: BTreeMap::new().tap(|writes| {
-            writes.insert(
-                PlayerCreator::ID,
-                improbable::WorkerRequirementSet {
-                    attribute_set: vec![improbable::WorkerAttributeSet {
-                        attribute: vec![layers::PLAYER_CREATION.into()],
-                    }],
-                },
-            );
-        }),
-    });
-    entity.add(improbable::Metadata {
-        entity_type: "Player Creator".into(),
-    });
-    let create_request_id = connection.send_create_entity_request(entity, None, None);
-    println!("Create entity request ID: {:?}", create_request_id);
-
     // HACK: Make sure the game exits if we get a SIGINT. This should be handled by
     // Amethyst once we can switch back to using it.
     ctrlc::set_handler(move || {
