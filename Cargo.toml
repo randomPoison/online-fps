@@ -6,4 +6,4 @@ members = [
 ]
 
 [patch.crates-io]
-spatialos-sdk = { git = "https://github.com/jamiebrynes7/spatialos-sdk-rs", rev = "4472408" }
+spatialos-sdk = { git = "https://github.com/jamiebrynes7/spatialos-sdk-rs", rev = "8f83abf" }
