@@ -6,7 +6,7 @@ use core::math::*;
 use core::ServerMessageBody;
 use log::*;
 use shred_derive::*;
-use spatialos_sdk::worker::{connection::Connection, parameters::CommandParameters, EntityId};
+use spatialos_sdk::worker::{commands::CommandParameters, connection::Connection, EntityId};
 use std::sync::Mutex;
 use workers::generated::beta_apart_uranus::*;
 

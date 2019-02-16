@@ -19,3 +19,18 @@ type SpawnPlayerResponse {
 component PlayerInput {
     id = 448260741;
 }
+
+/// Orientation of an avatar in the world.
+///
+/// Orientation is expressed as a combination of pitch and yaw. These two values
+/// can express all possible directions in which an avatar can look without
+/// risking gimbal lock.
+///
+/// The identity value is looking in the "forward" direction, i.e. along the
+/// negative z axis in a right-handed coordinate system.
+component Orientation {
+    id = 199864252;
+
+    float pitch = 1;
+    float yaw = 2;
+}

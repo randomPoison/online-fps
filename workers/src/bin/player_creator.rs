@@ -25,6 +25,7 @@ fn main() {
     let components = ComponentDatabase::new()
         .add_component::<PlayerCreator>()
         .add_component::<PlayerInput>()
+        .add_component::<Orientation>()
         .add_component::<improbable::Position>()
         .add_component::<improbable::EntityAcl>()
         .add_component::<improbable::Interest>()
@@ -116,6 +117,10 @@ fn handle_spawn_player(
                     y: 0.0,
                     z: 12.0,
                 },
+            });
+            entity.add(Orientation {
+                pitch: 0.0,
+                yaw: 0.0,
             });
             entity.add(PlayerInput {});
             entity.add(improbable::Metadata {
